@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(flutter --version:*)",
+      "Bash(flutter create:*)",
+      "Bash(flutter pub get:*)",
+      "Bash(flutter analyze:*)",
+      "Bash(go mod tidy:*)",
+      "Bash(export PATH=$PATH:/usr/local/go/bin:/opt/homebrew/bin)",
+      "Bash(go version:*)",
+      "Bash(/usr/local/go/bin/go mod:*)",
+      "Bash(/usr/local/go/bin/go build:*)"
+    ]
+  }
+}
