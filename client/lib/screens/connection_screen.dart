@@ -136,8 +136,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const SizedBox(height: 40),
-              const Icon(Icons.cast, size: 72, color: Color(0xFF2D6CDF)),
-              const SizedBox(height: 16),
+              const _AppLogo(),
+              const SizedBox(height: 20),
               const Text(
                 '局域网键鼠遥控器',
                 textAlign: TextAlign.center,
@@ -227,6 +227,53 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(12),
         borderSide: const BorderSide(color: Color(0xFF2D6CDF), width: 2),
+      ),
+    );
+  }
+}
+
+/// 应用 Logo：渐变圆圈 + 键盘/鼠标双图标
+class _AppLogo extends StatelessWidget {
+  const _AppLogo();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Container(
+        width: 100,
+        height: 100,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: const RadialGradient(
+            colors: [Color(0xFF3D7EEF), Color(0xFF1A2D6E)],
+            center: Alignment.topLeft,
+            radius: 1.4,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: const Color(0xFF2D6CDF).withAlpha(100),
+              blurRadius: 24,
+              spreadRadius: 4,
+            ),
+          ],
+        ),
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            // 键盘图标（偏上偏左）
+            Positioned(
+              top: 22,
+              left: 18,
+              child: Icon(Icons.keyboard, size: 36, color: Colors.white.withAlpha(230)),
+            ),
+            // 鼠标图标（偏下偏右，小一些）
+            Positioned(
+              bottom: 16,
+              right: 16,
+              child: Icon(Icons.mouse, size: 26, color: Colors.white.withAlpha(180)),
+            ),
+          ],
+        ),
       ),
     );
   }

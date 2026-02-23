@@ -34,7 +34,13 @@ class UdpService {
   // ── 心跳 ──
   Timer? _pingTimer;
   Timer? _pongCheckTimer;
-  int _lastPongMs = 0; // 上次收到 pong 的时间戳
+  int _lastPongMs = 0;   // 上次收到 pong 的时间戳
+  int _pingSentTime = 0; // 上次发送 ping 的时间戳
+
+  // ── 网络延迟 ──
+  int latencyMs = -1;
+  final _latencyController = StreamController<int>.broadcast();
+  Stream<int> get latencyStream => _latencyController.stream;
 
   // ── 断开通知流 ──
   final _disconnectController = StreamController<void>.broadcast();
@@ -70,6 +76,8 @@ class UdpService {
     _socket?.close();
     _socket = null;
     timeOffset = 0;
+    latencyMs = -1;
+    _latencyController.add(-1);
   }
 
   // ── 心跳管理 ──
@@ -104,7 +112,12 @@ class UdpService {
   void _sendPing() {
     if (_socket == null || _targetIp == null || !_connected) return;
     try {
-      _socket!.send(Uint8List.fromList([0x10]), _targetIp!, _targetPort);
+      // 新格式：[0x10][timestamp 8B]，服务端 echo 回来后可计算 RTT
+      _pingSentTime = DateTime.now().millisecondsSinceEpoch;
+      final packet = ByteData(9);
+      packet.setUint8(0, 0x10);
+      packet.setUint64(1, _pingSentTime, Endian.big);
+      _socket!.send(packet.buffer.asUint8List(), _targetIp!, _targetPort);
     } catch (_) {}
   }
 
@@ -160,6 +173,15 @@ class UdpService {
       } else if (cmd == 0x10) {
         // Pong：刷新心跳时间戳
         _lastPongMs = DateTime.now().millisecondsSinceEpoch;
+        // 新格式 pong（9字节）：服务端 echo 了发送时间戳，可计算 RTT
+        if (data.length >= 9) {
+          final sentTs = ByteData.sublistView(data, 1, 9).getUint64(0, Endian.big);
+          final rtt = _lastPongMs - sentTs.toInt();
+          if (rtt >= 0 && rtt < 5000) {
+            latencyMs = rtt;
+            _latencyController.add(rtt);
+          }
+        }
       }
     });
 

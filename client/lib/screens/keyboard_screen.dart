@@ -145,7 +145,11 @@ class _KeyboardScreenState extends State<KeyboardScreen>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 功能键网格
+          // F1-F10 横向滚动行
+          _buildFKeyRow(),
+          const SizedBox(height: 10),
+
+          // 原有功能键网格（含方向键、F11/F12、媒体键）
           ...keyboardLayout.map((row) => Padding(
             padding: const EdgeInsets.only(bottom: 10),
             child: Row(
@@ -164,8 +168,91 @@ class _KeyboardScreenState extends State<KeyboardScreen>
 
           const SizedBox(height: 12),
           _buildVolumeSlider(),
+          const SizedBox(height: 12),
+          _buildEditShortcuts(),
           const SizedBox(height: 20),
           _buildSystemShortcuts(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFKeyRow() {
+    const fKeys = [
+      (label: 'F1',  keycode: KeyCodes.f1),
+      (label: 'F2',  keycode: KeyCodes.f2),
+      (label: 'F3',  keycode: KeyCodes.f3),
+      (label: 'F4',  keycode: KeyCodes.f4),
+      (label: 'F5',  keycode: KeyCodes.f5),
+      (label: 'F6',  keycode: KeyCodes.f6),
+      (label: 'F7',  keycode: KeyCodes.f7),
+      (label: 'F8',  keycode: KeyCodes.f8),
+      (label: 'F9',  keycode: KeyCodes.f9),
+      (label: 'F10', keycode: KeyCodes.f10),
+    ];
+    return SizedBox(
+      height: 48,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: fKeys.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
+        itemBuilder: (_, i) {
+          final key = fKeys[i];
+          return SizedBox(
+            width: 52,
+            child: _KeyTile(
+              label: key.label,
+              onTap: () => widget.udpService.sendKeyTap(key.keycode),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildEditShortcuts() {
+    final os = widget.udpService.serverOs;
+    final modLabel = os == 1 ? '⌘' : 'Ctrl';
+
+    final items = [
+      (label: '全选', sublabel: '$modLabel+A', action: 0x07, icon: Icons.select_all),
+      (label: '复制', sublabel: '$modLabel+C', action: 0x08, icon: Icons.copy),
+      (label: '剪切', sublabel: '$modLabel+X', action: 0x09, icon: Icons.cut),
+      (label: '撤销', sublabel: '$modLabel+Z', action: 0x0A, icon: Icons.undo),
+      (label: '重做', sublabel: os == 1 ? '⌘⇧Z' : 'Ctrl+Y', action: 0x0B, icon: Icons.redo),
+      (label: '保存', sublabel: '$modLabel+S', action: 0x0C, icon: Icons.save_outlined),
+    ];
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF16213E),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.edit_outlined, color: Color(0xFF2D6CDF), size: 16),
+              SizedBox(width: 6),
+              Text('编辑快捷键', style: TextStyle(color: Colors.white70, fontSize: 13)),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: items.map((item) => Expanded(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 3),
+                child: _EditChip(
+                  label: item.label,
+                  sublabel: item.sublabel,
+                  icon: item.icon,
+                  onTap: () => widget.udpService.sendSysAction(item.action),
+                ),
+              ),
+            )).toList(),
+          ),
         ],
       ),
     );
@@ -575,6 +662,72 @@ class _SysChipState extends State<_SysChip> {
                     : (_pressed ? Colors.white : Colors.white70),
                 fontSize: 13,
               ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 编辑快捷键按钮（图标 + 主标签 + 快捷键提示）
+class _EditChip extends StatefulWidget {
+  final String label;
+  final String sublabel;
+  final IconData icon;
+  final VoidCallback onTap;
+  const _EditChip({
+    required this.label,
+    required this.sublabel,
+    required this.icon,
+    required this.onTap,
+  });
+
+  @override
+  State<_EditChip> createState() => _EditChipState();
+}
+
+class _EditChipState extends State<_EditChip> {
+  bool _pressed = false;
+
+  @override
+  Widget build(BuildContext context) {
+    const color = Color(0xFF2D6CDF);
+    return GestureDetector(
+      onTapDown: (_) {
+        setState(() => _pressed = true);
+        HapticFeedback.lightImpact();
+      },
+      onTapUp: (_) {
+        setState(() => _pressed = false);
+        widget.onTap();
+      },
+      onTapCancel: () => setState(() => _pressed = false),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 80),
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        decoration: BoxDecoration(
+          color: _pressed ? color.withAlpha(60) : color.withAlpha(20),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: _pressed ? color.withAlpha(200) : color.withAlpha(80),
+          ),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(widget.icon, size: 16, color: _pressed ? Colors.white : color),
+            const SizedBox(height: 3),
+            Text(
+              widget.label,
+              style: TextStyle(
+                color: _pressed ? Colors.white : Colors.white70,
+                fontSize: 11,
+              ),
+            ),
+            Text(
+              widget.sublabel,
+              style: const TextStyle(color: Colors.white30, fontSize: 9),
             ),
           ],
         ),

@@ -25,6 +25,8 @@ class _ControlScreenState extends State<ControlScreen> {
   int _currentIndex = 0;
   late final List<Widget> _pages;
   StreamSubscription? _disconnectSub;
+  StreamSubscription? _latencySub;
+  int _latencyMs = -1;
 
   @override
   void initState() {
@@ -39,11 +41,17 @@ class _ControlScreenState extends State<ControlScreen> {
     _disconnectSub = widget.udpService.disconnectStream.listen((_) {
       if (mounted) _onServerDisconnected();
     });
+
+    // 订阅网络延迟更新
+    _latencySub = widget.udpService.latencyStream.listen((ms) {
+      if (mounted) setState(() => _latencyMs = ms);
+    });
   }
 
   @override
   void dispose() {
     _disconnectSub?.cancel();
+    _latencySub?.cancel();
     super.dispose();
   }
 
@@ -110,10 +118,9 @@ class _ControlScreenState extends State<ControlScreen> {
           children: [
             Icon(_osIcon, size: 16, color: _osColor),
             const SizedBox(width: 6),
-            Text(
-              _osLabel,
-              style: const TextStyle(fontSize: 15),
-            ),
+            Text(_osLabel, style: const TextStyle(fontSize: 15)),
+            const SizedBox(width: 10),
+            _LatencyBadge(latencyMs: _latencyMs),
           ],
         ),
         actions: [
@@ -150,6 +157,45 @@ class _ControlScreenState extends State<ControlScreen> {
             label: '键盘',
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// 网络延迟小标签，颜色随延迟变化
+class _LatencyBadge extends StatelessWidget {
+  final int latencyMs;
+  const _LatencyBadge({required this.latencyMs});
+
+  @override
+  Widget build(BuildContext context) {
+    final String label;
+    final Color color;
+
+    if (latencyMs < 0) {
+      label = '—';
+      color = Colors.white24;
+    } else if (latencyMs <= 50) {
+      label = '${latencyMs}ms';
+      color = Colors.greenAccent;
+    } else if (latencyMs <= 150) {
+      label = '${latencyMs}ms';
+      color = Colors.yellowAccent;
+    } else {
+      label = '${latencyMs}ms';
+      color = Colors.redAccent;
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withAlpha(30),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: color.withAlpha(120), width: 1),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(fontSize: 11, color: color, fontFeatures: const []),
       ),
     );
   }

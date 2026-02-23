@@ -4,12 +4,14 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-vgo/robotgo"
@@ -20,18 +22,18 @@ const (
 	bufferSize  = 65535
 
 	// 指令码
-	cmdTimeSync    = 0x00
-	cmdMouseMove   = 0x01
-	cmdMouseClick  = 0x02
-	cmdMouseScroll = 0x03
-	cmdKeyTap      = 0x04
-	cmdTextInput   = 0x05
-	cmdMouseDown        = 0x06 // 按下不松开（拖拽用）
-	cmdMouseUp          = 0x07 // 松开鼠标键
-	cmdDblClick         = 0x08 // 双击
-	cmdTextInputDirect  = 0x09 // 逐字输入（TypeStr，不经剪贴板）
-	cmdSysAction        = 0x0A // 系统操作
-	cmdPing             = 0x10 // 心跳
+	cmdTimeSync        = 0x00
+	cmdMouseMove       = 0x01
+	cmdMouseClick      = 0x02
+	cmdMouseScroll     = 0x03
+	cmdKeyTap          = 0x04
+	cmdTextInput       = 0x05
+	cmdMouseDown       = 0x06 // 按下不松开（拖拽用）
+	cmdMouseUp         = 0x07 // 松开鼠标键
+	cmdDblClick        = 0x08 // 双击
+	cmdTextInputDirect = 0x09 // 逐字输入（TypeStr，不经剪贴板）
+	cmdSysAction       = 0x0A // 系统操作
+	cmdPing            = 0x10 // 心跳
 
 	// 系统操作码
 	sysLock      = byte(0x01)
@@ -40,6 +42,16 @@ const (
 	sysRestart   = byte(0x04)
 	sysSwitchApp = byte(0x05) // 切换应用窗口
 	sysScreenshot = byte(0x06) // 截图
+	// 编辑快捷键
+	sysSelectAll = byte(0x07) // 全选
+	sysCopy      = byte(0x08) // 复制
+	sysCut       = byte(0x09) // 剪切
+	sysUndo      = byte(0x0A) // 撤销
+	sysRedo      = byte(0x0B) // 重做
+	sysSave      = byte(0x0C) // 保存
+	// 窗口管理
+	sysTaskView    = byte(0x0D) // 任务视图（Win+Tab / Mission Control）
+	sysShowDesktop = byte(0x0E) // 显示桌面（Win+D / Ctrl+F3）
 
 	// 鼠标按键
 	btnLeft   = 0x00
@@ -61,6 +73,7 @@ type serverConfig struct {
 	password string
 	timeout  int64
 	port     int
+	logFile  string
 }
 
 // loadConfig 读取 key=value 格式配置文件，解析失败时使用默认值
@@ -94,6 +107,8 @@ func loadConfig(path string) serverConfig {
 			if _, err := fmt.Sscan(v, &n); err == nil && n > 0 {
 				cfg.port = n
 			}
+		case "log_file":
+			cfg.logFile = v
 		}
 	}
 	return cfg
@@ -131,10 +146,93 @@ var keyMap = map[byte]string{
 	203: "audio_play", 204: "audio_next", 205: "audio_prev",
 }
 
+// ── 操作日志函数变量：生产环境写文件，开发环境输出控制台 ──
+var opLog func(format string, args ...any)
+
+// ── 已连接客户端注册表 ──
+
+type clientInfo struct {
+	ip        string
+	firstSeen time.Time
+	lastSeen  time.Time
+	packets   int64
+	latencyMs int64 // 服务端估算单向延迟（来自 Ping 时间戳，需时钟同步）
+}
+
+var (
+	clientMu sync.RWMutex
+	clients  = map[string]*clientInfo{}
+)
+
+func upsertClient(ip string) {
+	clientMu.Lock()
+	defer clientMu.Unlock()
+	if _, ok := clients[ip]; !ok {
+		clients[ip] = &clientInfo{ip: ip, firstSeen: time.Now(), lastSeen: time.Now()}
+	} else {
+		clients[ip].lastSeen = time.Now()
+	}
+}
+
+func updateClientActivity(ip string) {
+	clientMu.Lock()
+	defer clientMu.Unlock()
+	if c, ok := clients[ip]; ok {
+		c.lastSeen = time.Now()
+		c.packets++
+	}
+}
+
+func updateClientLatency(ip string, latencyMs int64) {
+	clientMu.Lock()
+	defer clientMu.Unlock()
+	if c, ok := clients[ip]; ok {
+		c.lastSeen = time.Now()
+		c.latencyMs = latencyMs
+	}
+}
+
+func printClients() {
+	clientMu.RLock()
+	defer clientMu.RUnlock()
+	if len(clients) == 0 {
+		return
+	}
+	now := time.Now()
+	fmt.Printf("\n===== 已连接客户端 (%d) =====\n", len(clients))
+	fmt.Printf("%-18s %-12s %-12s %-8s %s\n", "IP", "首次连接", "最近活跃", "延迟", "数据包")
+	for _, c := range clients {
+		latencyStr := "—"
+		if c.latencyMs > 0 {
+			latencyStr = fmt.Sprintf("%dms", c.latencyMs)
+		}
+		fmt.Printf("%-18s %-12s %-12s %-8s %d\n",
+			c.ip,
+			fmtAgo(now.Sub(c.firstSeen)),
+			fmtAgo(now.Sub(c.lastSeen)),
+			latencyStr,
+			c.packets,
+		)
+	}
+	fmt.Println("=============================")
+}
+
+func fmtAgo(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds前", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm前", int(d.Minutes()))
+	default:
+		return fmt.Sprintf("%dh前", int(d.Hours()))
+	}
+}
+
 func main() {
 	configPath := flag.String("config", "server.conf", "配置文件路径")
 	portFlag := flag.Int("port", 0, "UDP 端口（覆盖配置文件）")
 	timeoutFlag := flag.Int("timeout", 0, "超时阈值 ms（覆盖配置文件）")
+	logFlag := flag.String("log", "", "操作日志文件路径（覆盖配置文件）")
 	flag.Parse()
 
 	cfg := loadConfig(*configPath)
@@ -143,6 +241,25 @@ func main() {
 	}
 	if *timeoutFlag > 0 {
 		cfg.timeout = int64(*timeoutFlag)
+	}
+	if *logFlag != "" {
+		cfg.logFile = *logFlag
+	}
+
+	// 配置操作日志输出
+	if cfg.logFile != "" {
+		f, err := os.OpenFile(cfg.logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			log.Fatalf("无法打开日志文件 %s: %v", cfg.logFile, err)
+		}
+		defer f.Close()
+		log.SetOutput(io.MultiWriter(f))
+		log.SetFlags(log.LstdFlags)
+		opLog = log.Printf
+	} else {
+		opLog = func(format string, args ...any) {
+			fmt.Printf(format+"\n", args...)
+		}
 	}
 
 	addr := fmt.Sprintf(":%d", cfg.port)
@@ -160,10 +277,24 @@ func main() {
 	if cfg.password != "" {
 		authMode = "已启用密码保护"
 	}
+	logMode := "控制台"
+	if cfg.logFile != "" {
+		logMode = cfg.logFile
+	}
 	fmt.Printf("===== 局域网键鼠遥控器 - 被控端 =====\n")
 	fmt.Printf("系统: %s/%s\n", runtime.GOOS, runtime.GOARCH)
 	fmt.Printf("监听端口: %d  超时: %dms  认证: %s\n", cfg.port, cfg.timeout, authMode)
+	fmt.Printf("操作日志: %s\n", logMode)
 	fmt.Printf("======================================\n\n")
+
+	// 定期打印连接用户表
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			printClients()
+		}
+	}()
 
 	buf := make([]byte, bufferSize)
 	for {
@@ -180,6 +311,7 @@ func main() {
 func handlePacket(conn *net.UDPConn, addr *net.UDPAddr, data []byte, cfg serverConfig) {
 	cmd := data[0]
 	now := time.Now().UnixMilli()
+	ip := addr.IP.String()
 
 	// ── 时间同步握手 (0x00) ──
 	// 请求: [0x00] + [pwd_len 1B] + [password UTF-8]
@@ -196,9 +328,15 @@ func handlePacket(conn *net.UDPConn, addr *net.UDPAddr, data []byte, cfg serverC
 		authResult := authOK
 		if cfg.password != "" && providedPwd != cfg.password {
 			authResult = authFail
-			log.Printf("[%s] 认证失败（密码错误）", addr.IP)
-		} else if cfg.password != "" {
-			fmt.Printf("[%s] 认证成功\n", addr.IP)
+			opLog("[%s] 认证失败（密码错误）", ip)
+		} else {
+			upsertClient(ip)
+			if cfg.password != "" {
+				opLog("[%s] 认证成功", ip)
+			} else {
+				opLog("[%s] 已连接", ip)
+			}
+			printClients()
 		}
 
 		reply := make([]byte, 11)
@@ -210,9 +348,25 @@ func handlePacket(conn *net.UDPConn, addr *net.UDPAddr, data []byte, cfg serverC
 		return
 	}
 
-	// 心跳 Ping（只有 1 字节，在长度校验之前处理，立即回 Pong）
+	// ── 心跳 Ping ──
+	// 旧格式：[0x10]（1字节），新格式：[0x10][timestamp 8B]（9字节）
 	if cmd == cmdPing {
-		conn.WriteToUDP([]byte{cmdPing}, addr) //nolint:errcheck
+		if len(data) >= 9 {
+			// 新格式：echo 时间戳，客户端可计算 RTT
+			pong := make([]byte, 9)
+			pong[0] = cmdPing
+			copy(pong[1:], data[1:9])
+			conn.WriteToUDP(pong, addr) //nolint:errcheck
+			// 估算单向延迟（需时钟经过握手同步）
+			clientTs := int64(binary.BigEndian.Uint64(data[1:9]))
+			oneWay := now - clientTs
+			if oneWay >= 0 && oneWay < 5000 {
+				updateClientLatency(ip, oneWay)
+			}
+		} else {
+			conn.WriteToUDP([]byte{cmdPing}, addr) //nolint:errcheck
+			upsertClient(ip)
+		}
 		return
 	}
 
@@ -224,6 +378,8 @@ func handlePacket(conn *net.UDPConn, addr *net.UDPAddr, data []byte, cfg serverC
 	if now > packetTime && (now-packetTime) > cfg.timeout {
 		return // 超时丢包，防止堆积指令导致鼠标乱飞
 	}
+
+	updateClientActivity(ip)
 
 	switch cmd {
 	case cmdMouseMove:
@@ -284,7 +440,7 @@ func handlePacket(conn *net.UDPConn, addr *net.UDPAddr, data []byte, cfg serverC
 				text := string(data[11 : 11+textLen])
 				if text != "" {
 					robotgo.TypeStr(text)
-					fmt.Printf("文本输入(逐字): %q\n", text)
+					opLog("文本输入(逐字): %q", text)
 				}
 			}
 		}
@@ -319,11 +475,62 @@ func pasteText(text string) {
 		time.Sleep(30 * time.Millisecond)
 		robotgo.KeyUp("ctrl")
 	}
-	fmt.Printf("文本输入(剪贴板): %q\n", text)
+	opLog("文本输入(剪贴板): %q", text)
+}
+
+// modKey 返回当前平台的修饰键名
+func modKey() string {
+	if runtime.GOOS == "darwin" {
+		return "command"
+	}
+	return "ctrl"
+}
+
+// keyCombo 按下修饰键 + 敲击目标键 + 松开修饰键
+func keyCombo(mod, key string) {
+	robotgo.KeyDown(mod)
+	time.Sleep(20 * time.Millisecond)
+	robotgo.KeyTap(key)
+	time.Sleep(20 * time.Millisecond)
+	robotgo.KeyUp(mod)
 }
 
 // sysAction 执行平台相关的系统操作
 func sysAction(action byte) {
+	// ── 跨平台编辑快捷键 ──
+	mod := modKey()
+	switch action {
+	case sysSelectAll:
+		keyCombo(mod, "a")
+		return
+	case sysCopy:
+		keyCombo(mod, "c")
+		return
+	case sysCut:
+		keyCombo(mod, "x")
+		return
+	case sysUndo:
+		keyCombo(mod, "z")
+		return
+	case sysRedo:
+		if runtime.GOOS == "darwin" {
+			robotgo.KeyDown("command")
+			robotgo.KeyDown("shift")
+			time.Sleep(20 * time.Millisecond)
+			robotgo.KeyTap("z")
+			time.Sleep(20 * time.Millisecond)
+			robotgo.KeyUp("shift")
+			robotgo.KeyUp("command")
+		} else {
+			keyCombo("ctrl", "y")
+		}
+		return
+	case sysSave:
+		keyCombo(mod, "s")
+		return
+	}
+
+	// ── 平台相关操作 ──
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
@@ -353,6 +560,18 @@ func sysAction(action byte) {
 			time.Sleep(20 * time.Millisecond)
 			robotgo.KeyUp("shift")
 			robotgo.KeyUp("command")
+		case sysTaskView: // Mission Control
+			robotgo.KeyDown("ctrl")
+			time.Sleep(20 * time.Millisecond)
+			robotgo.KeyTap("up")
+			time.Sleep(20 * time.Millisecond)
+			robotgo.KeyUp("ctrl")
+		case sysShowDesktop:
+			robotgo.KeyDown("ctrl")
+			time.Sleep(20 * time.Millisecond)
+			robotgo.KeyTap("f3")
+			time.Sleep(20 * time.Millisecond)
+			robotgo.KeyUp("ctrl")
 		}
 	case "windows":
 		switch action {
@@ -372,6 +591,18 @@ func sysAction(action byte) {
 			robotgo.KeyUp("alt")
 		case sysScreenshot:
 			robotgo.KeyTap("snapshot") // PrintScreen
+		case sysTaskView: // Win+Tab
+			robotgo.KeyDown("lwin")
+			time.Sleep(20 * time.Millisecond)
+			robotgo.KeyTap("tab")
+			time.Sleep(20 * time.Millisecond)
+			robotgo.KeyUp("lwin")
+		case sysShowDesktop: // Win+D
+			robotgo.KeyDown("lwin")
+			time.Sleep(20 * time.Millisecond)
+			robotgo.KeyTap("d")
+			time.Sleep(20 * time.Millisecond)
+			robotgo.KeyUp("lwin")
 		}
 	}
 	if cmd != nil {

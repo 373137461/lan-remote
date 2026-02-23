@@ -30,6 +30,22 @@ go build -o lan-remote-server .
 ./lan-remote-server
 
 # Windows
+安装 MinGW-w64（如果没有 GCC）
+推荐用 MSYS2 安装（最省事）：
+
+下载安装 MSYS2，默认装在 C:\msys64
+
+打开 MSYS2 UCRT64 终端，运行：
+
+pacman -S mingw-w64-ucrt-x86_64-gcc
+将 GCC 加入 Windows PATH：
+
+
+C:\msys64\ucrt64\bin
+（控制面板 → 系统 → 高级系统设置 → 环境变量 → Path → 新建）
+
+set CGO_ENABLED=1
+go build -o lan-remote-server.exe .
 lan-remote-server.exe
 
 # 可选参数
