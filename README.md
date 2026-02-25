@@ -10,9 +10,9 @@ iPhone (Flutter iOS)  ──UDP 8888──►  Windows / macOS (Go)
 ```
 
 | 端 | 技术 | 职责 |
-|----|------|------|
+| -- | ---- | ---- |
 | 主控端 | Flutter iOS | 采集触摸 / 陀螺仪 / 键盘输入，封装 UDP 包发送 |
-| 被控端 | Go + robotgo | 监听 UDP，解析指令，调用系统 API 驱动鼠标键盘 |
+| 被控端 | Go + robotgo + Fyne | 监听 UDP，解析指令，调用系统 API 驱动鼠标键盘；提供系统托盘与设置窗口 |
 
 ---
 
@@ -49,7 +49,8 @@ go build -o lan-remote-server.exe .
 lan-remote-server.exe
 
 # 可选参数
-./lan-remote-server -port 9000 -timeout 80 -config /path/to/server.conf
+./lan-remote-server -port 9000 -timeout 80 -config /path/to/server.conf -log /path/to/ops.log
+./lan-remote-server -nogui   # 无界面纯命令行模式
 ```
 
 首次编译会拉取 `robotgo` 及其 C 依赖，需要几分钟。
@@ -57,6 +58,17 @@ lan-remote-server.exe
 > **macOS**：首次运行后，进入「系统设置 → 隐私与安全性 → 辅助功能」，勾选允许该程序，否则鼠标键盘控制不生效。
 
 > **Windows**：如防火墙拦截，在「Windows Defender 防火墙 → 高级设置」中放行 UDP 8888 端口入站规则。
+
+#### 系统托盘与设置窗口
+
+启动后会在系统托盘出现图标（默认 GUI 模式），右键托盘图标可：
+
+- 查看当前端口和密码状态
+- 打开**设置窗口**：在运行时修改密码、UDP 端口、超时阈值，无需手动编辑配置文件，密码和超时改动即时生效，端口改动需重启
+- 切换**开机自启动**（macOS 写入 LaunchAgent plist，Windows 写入注册表启动项，Linux 写入 systemd user service）
+- 退出程序
+
+使用 `-nogui` 标志可跳过托盘，仅命令行运行（适合服务器、SSH 远程场景）。
 
 #### 配置文件（server.conf）
 
@@ -71,6 +83,9 @@ port=8888
 
 # 陈旧包丢弃阈值（毫秒），超过此值的包不执行，防止堆积指令乱飞
 timeout=50
+
+# 操作日志文件路径（留空则输出到控制台）
+log_file=
 ```
 
 ---
@@ -147,11 +162,24 @@ flutter run --release   # 连接 iPhone 后运行
 | 媒体键 | 播放/暂停、上一首、下一首 |
 | 音量控制 | 滑块（左右拖动，每格 = 1 次音量键），静音按钮 |
 
+**编辑快捷键**（OS 自适应，macOS 用 Cmd，Windows 用 Ctrl）：
+
+| 操作 | macOS | Windows |
+|------|-------|---------|
+| 全选 | Cmd+A | Ctrl+A |
+| 复制 | Cmd+C | Ctrl+C |
+| 剪切 | Cmd+X | Ctrl+X |
+| 撤销 | Cmd+Z | Ctrl+Z |
+| 重做 | Cmd+Shift+Z | Ctrl+Y |
+| 保存 | Cmd+S | Ctrl+S |
+
 **系统操作**（底部区域，OS 自适应）：
 
 | 操作 | macOS | Windows |
 |------|-------|---------|
 | 切换应用 | Cmd+Tab | Alt+Tab |
+| 任务视图 | Ctrl+↑（Mission Control） | Win+Tab |
+| 显示桌面 | Ctrl+F3 | Win+D |
 | 截图 | Cmd+Shift+3 | PrintScreen |
 | 锁屏 | Ctrl+Cmd+Q | Win+L |
 | 睡眠 | pmset sleepnow | 系统休眠 |
@@ -174,7 +202,7 @@ flutter run --release   # 连接 iPhone 后运行
 ## 连接与心跳
 
 1. **时间同步握手**：连接时客户端发送 `[0x00][密码长度][密码]`，服务端回复当前时间戳 + OS 标识 + 认证结果，客户端用 RTT / 2 补偿时钟偏差
-2. **双向心跳**：连接后每 15 秒客户端发 Ping（`0x10`，1 字节），服务端立即回 Pong；客户端 45 秒未收到 Pong 自动断开并弹回连接页
+2. **双向心跳**：连接后每 15 秒客户端发 Ping（`0x10` + 时间戳 8B），服务端回 Pong 并携带原始时间戳（客户端可计算 RTT）；客户端 45 秒未收到 Pong 自动断开并弹回连接页
 3. **陈旧包丢弃**：服务端检查每个控制包时间戳，超过阈值（默认 50ms）的包直接丢弃，防止网络抖动堆积指令
 
 ---
@@ -196,11 +224,28 @@ flutter run --release   # 连接 iPhone 后运行
 | 双击 | `0x08` | `button(UInt8)` | |
 | 文本(逐字) | `0x09` | `len(UInt16) + UTF-8` | TypeStr 直接输入，不经剪贴板 |
 | 系统操作 | `0x0A` | `action(UInt8)` | 见系统操作码 |
-| 心跳 Ping | `0x10` | 无（1 字节包，无时间戳头） | 服务端回同样的 1 字节 |
+| 心跳 Ping | `0x10` | `[timestamp 8B]`（可选） | 服务端回同样格式；旧格式仅 1 字节 |
 
 **时间同步响应 OS 标识**：`0x00`=Windows，`0x01`=macOS，`0x02`=Linux
 
-**系统操作码**：`0x01`=锁屏，`0x02`=睡眠，`0x03`=关机，`0x04`=重启，`0x05`=切换应用，`0x06`=截图
+**系统操作码**：
+
+| 码 | 操作 |
+| -- | ---- |
+| `0x01` | 锁屏 |
+| `0x02` | 睡眠 |
+| `0x03` | 关机 |
+| `0x04` | 重启 |
+| `0x05` | 切换应用（Cmd/Alt+Tab） |
+| `0x06` | 截图 |
+| `0x07` | 全选（Cmd/Ctrl+A） |
+| `0x08` | 复制（Cmd/Ctrl+C） |
+| `0x09` | 剪切（Cmd/Ctrl+X） |
+| `0x0A` | 撤销（Cmd/Ctrl+Z） |
+| `0x0B` | 重做（Cmd+Shift+Z / Ctrl+Y） |
+| `0x0C` | 保存（Cmd/Ctrl+S） |
+| `0x0D` | 任务视图（Ctrl+↑ / Win+Tab） |
+| `0x0E` | 显示桌面（Ctrl+F3 / Win+D） |
 
 ---
 
@@ -210,7 +255,13 @@ flutter run --release   # 连接 iPhone 后运行
 .
 ├── server/
 │   ├── main.go              # UDP 监听、指令分发、robotgo 执行、系统操作
-│   ├── server.conf          # 运行时配置（密码、端口、超时）
+│   ├── tray.go              # Fyne 系统托盘 + 设置窗口
+│   ├── autostart_darwin.go  # macOS LaunchAgent 自启动
+│   ├── autostart_windows.go # Windows 注册表自启动
+│   ├── autostart_linux.go   # Linux systemd user service 自启动
+│   ├── assets/
+│   │   └── app_icon.png     # 托盘图标（编译期嵌入）
+│   ├── server.conf          # 运行时配置（密码、端口、超时、日志）
 │   ├── go.mod
 │   └── go.sum
 └── client/
@@ -238,8 +289,9 @@ flutter run --release   # 连接 iPhone 后运行
 ### 被控端
 
 | 包 | 用途 |
-|----|------|
+| -- | ---- |
 | `github.com/go-vgo/robotgo` | 跨平台鼠标键盘控制 |
+| `fyne.io/fyne/v2` | 系统托盘 + 设置窗口 GUI |
 
 ### 主控端
 
@@ -265,10 +317,16 @@ A: 确认手机和电脑在**同一 Wi-Fi** 下，且服务端正在运行。部
 A: 磁力计初始化需要 1~2 秒，启动后稍等片刻再移动。若持续漂移，可在远离金属干扰的环境下使用。
 
 **Q: 如何设置密码？**
-A: 编辑 `server.conf` 中的 `password=` 字段，重启服务端生效。主控端连接时填写相同密码。
+A: 点击托盘图标 → 「设置...」，在设置窗口中修改密码，保存后即时生效。也可直接编辑 `server.conf` 中的 `password=` 字段后重启。
 
 **Q: 想更改监听端口？**
-A: 修改 `server.conf` 中 `port=`，主控端连接界面的「端口」字段同步修改。
+A: 点击托盘图标 → 「设置...」修改端口后保存，**需重启服务端**生效。主控端连接界面的「端口」字段同步修改。
+
+**Q: 如何设置开机自启动？**
+A: 点击托盘图标 → 「开机自启动」切换开关即可。macOS 通过 LaunchAgent 实现，Windows 写入注册表 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，Linux 生成 systemd user service。
+
+**Q: 服务器环境没有图形界面怎么办？**
+A: 使用 `-nogui` 参数启动，跳过 Fyne 托盘，仅命令行运行：`./lan-remote-server -nogui`。
 
 ---
 
