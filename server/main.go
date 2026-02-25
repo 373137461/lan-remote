@@ -1,6 +1,7 @@
 package main
 
 import (
+	_ "embed"
 	"encoding/binary"
 	"flag"
 	"fmt"
@@ -16,6 +17,9 @@ import (
 
 	"github.com/go-vgo/robotgo"
 )
+
+//go:embed assets/app_icon.png
+var iconData []byte
 
 const (
 	defaultPort = 8888
@@ -76,6 +80,25 @@ type serverConfig struct {
 	logFile  string
 }
 
+// ── 全局可变配置（支持设置窗口实时修改密码/超时） ──
+var (
+	cfgMu    sync.RWMutex
+	gCfg     serverConfig
+	gConfPath string
+)
+
+func getCfg() serverConfig {
+	cfgMu.RLock()
+	defer cfgMu.RUnlock()
+	return gCfg
+}
+
+func updateCfg(c serverConfig) {
+	cfgMu.Lock()
+	gCfg = c
+	cfgMu.Unlock()
+}
+
 // loadConfig 读取 key=value 格式配置文件，解析失败时使用默认值
 func loadConfig(path string) serverConfig {
 	cfg := serverConfig{timeout: 50, port: defaultPort}
@@ -112,6 +135,25 @@ func loadConfig(path string) serverConfig {
 		}
 	}
 	return cfg
+}
+
+// saveConfig 将配置写回文件
+func saveConfig(path string, cfg serverConfig) error {
+	lines := []string{
+		"# 局域网键鼠遥控器 - 被控端配置文件",
+		"# 留空则免密码直连，填写后主控端需输入正确密码才能连接",
+		"password=" + cfg.password,
+		"",
+		"# UDP 监听端口",
+		fmt.Sprintf("port=%d", cfg.port),
+		"",
+		"# 丢包超时阈值（毫秒）：超过此时间的陈旧数据包将被丢弃",
+		fmt.Sprintf("timeout=%d", cfg.timeout),
+	}
+	if cfg.logFile != "" {
+		lines = append(lines, "", "# 操作日志文件路径", "log_file="+cfg.logFile)
+	}
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
 }
 
 func getOSByte() byte {
@@ -233,24 +275,26 @@ func main() {
 	portFlag := flag.Int("port", 0, "UDP 端口（覆盖配置文件）")
 	timeoutFlag := flag.Int("timeout", 0, "超时阈值 ms（覆盖配置文件）")
 	logFlag := flag.String("log", "", "操作日志文件路径（覆盖配置文件）")
+	noGUI := flag.Bool("nogui", false, "无界面模式（仅命令行，不显示托盘和设置窗口）")
 	flag.Parse()
 
-	cfg := loadConfig(*configPath)
+	gConfPath = *configPath
+	gCfg = loadConfig(gConfPath)
 	if *portFlag > 0 {
-		cfg.port = *portFlag
+		gCfg.port = *portFlag
 	}
 	if *timeoutFlag > 0 {
-		cfg.timeout = int64(*timeoutFlag)
+		gCfg.timeout = int64(*timeoutFlag)
 	}
 	if *logFlag != "" {
-		cfg.logFile = *logFlag
+		gCfg.logFile = *logFlag
 	}
 
 	// 配置操作日志输出
-	if cfg.logFile != "" {
-		f, err := os.OpenFile(cfg.logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if gCfg.logFile != "" {
+		f, err := os.OpenFile(gCfg.logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 		if err != nil {
-			log.Fatalf("无法打开日志文件 %s: %v", cfg.logFile, err)
+			log.Fatalf("无法打开日志文件 %s: %v", gCfg.logFile, err)
 		}
 		defer f.Close()
 		log.SetOutput(io.MultiWriter(f))
@@ -262,17 +306,7 @@ func main() {
 		}
 	}
 
-	addr := fmt.Sprintf(":%d", cfg.port)
-	udpAddr, err := net.ResolveUDPAddr("udp", addr)
-	if err != nil {
-		log.Fatalf("解析地址失败: %v", err)
-	}
-	conn, err := net.ListenUDP("udp", udpAddr)
-	if err != nil {
-		log.Fatalf("监听 UDP 失败: %v", err)
-	}
-	defer conn.Close()
-
+	cfg := getCfg()
 	authMode := "无密码（免认证）"
 	if cfg.password != "" {
 		authMode = "已启用密码保护"
@@ -286,6 +320,31 @@ func main() {
 	fmt.Printf("监听端口: %d  超时: %dms  认证: %s\n", cfg.port, cfg.timeout, authMode)
 	fmt.Printf("操作日志: %s\n", logMode)
 	fmt.Printf("======================================\n\n")
+
+	if *noGUI {
+		// 纯命令行模式：UDP 服务器在主 goroutine 阻塞运行
+		runUDPServer()
+		return
+	}
+
+	// GUI 模式：UDP 服务器在后台 goroutine 运行，主线程运行 Fyne（托盘 + 设置窗口）
+	go runUDPServer()
+	runFyneApp()
+}
+
+// runUDPServer 启动 UDP 监听循环（阻塞）
+func runUDPServer() {
+	cfg := getCfg()
+	addr := fmt.Sprintf(":%d", cfg.port)
+	udpAddr, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		log.Fatalf("解析地址失败: %v", err)
+	}
+	conn, err := net.ListenUDP("udp", udpAddr)
+	if err != nil {
+		log.Fatalf("监听 UDP 失败: %v", err)
+	}
+	defer conn.Close()
 
 	// 定期打印连接用户表
 	go func() {
@@ -304,11 +363,12 @@ func main() {
 		}
 		data := make([]byte, n)
 		copy(data, buf[:n])
-		go handlePacket(conn, remoteAddr, data, cfg)
+		go handlePacket(conn, remoteAddr, data)
 	}
 }
 
-func handlePacket(conn *net.UDPConn, addr *net.UDPAddr, data []byte, cfg serverConfig) {
+func handlePacket(conn *net.UDPConn, addr *net.UDPAddr, data []byte) {
+	cfg := getCfg()
 	cmd := data[0]
 	now := time.Now().UnixMilli()
 	ip := addr.IP.String()
