@@ -12,7 +12,7 @@ iPhone (Flutter iOS)  ──UDP 8888──►  Windows / macOS (Go)
 | 端 | 技术 | 职责 |
 | -- | ---- | ---- |
 | 主控端 | Flutter iOS | 采集触摸 / 陀螺仪 / 键盘输入，封装 UDP 包发送 |
-| 被控端 | Go + robotgo + Fyne | 监听 UDP，解析指令，调用系统 API 驱动鼠标键盘；提供系统托盘与设置窗口 |
+| 被控端 | Go + robotgo | 监听 UDP，解析指令，调用系统 API 驱动鼠标键盘；系统托盘 + 网页配置 |
 
 ---
 
@@ -59,12 +59,12 @@ lan-remote-server.exe
 
 > **Windows**：如防火墙拦截，在「Windows Defender 防火墙 → 高级设置」中放行 UDP 8888 端口入站规则。
 
-#### 系统托盘与设置窗口
+#### 系统托盘与网页配置
 
 启动后会在系统托盘出现图标（默认 GUI 模式），右键托盘图标可：
 
 - 查看当前端口和密码状态
-- 打开**设置窗口**：在运行时修改密码、UDP 端口、超时阈值，无需手动编辑配置文件，密码和超时改动即时生效，端口改动需重启
+- 打开**设置...**：用默认浏览器打开本地配置页（`http://127.0.0.1:<随机端口>`），在网页中修改密码、UDP 端口、超时阈值；密码和超时改动即时生效，端口改动需重启
 - 切换**开机自启动**（macOS 写入 LaunchAgent plist，Windows 写入注册表启动项，Linux 写入 systemd user service）
 - 退出程序
 
@@ -255,7 +255,8 @@ flutter run --release   # 连接 iPhone 后运行
 .
 ├── server/
 │   ├── main.go              # UDP 监听、指令分发、robotgo 执行、系统操作
-│   ├── tray.go              # Fyne 系统托盘 + 设置窗口
+│   ├── tray.go              # 系统托盘（fyne.io/systray）
+│   ├── webconfig.go         # 本地 HTTP 配置服务 + 内嵌网页
 │   ├── autostart_darwin.go  # macOS LaunchAgent 自启动
 │   ├── autostart_windows.go # Windows 注册表自启动
 │   ├── autostart_linux.go   # Linux systemd user service 自启动
@@ -291,7 +292,7 @@ flutter run --release   # 连接 iPhone 后运行
 | 包 | 用途 |
 | -- | ---- |
 | `github.com/go-vgo/robotgo` | 跨平台鼠标键盘控制 |
-| `fyne.io/fyne/v2` | 系统托盘 + 设置窗口 GUI |
+| `fyne.io/systray` | 跨平台系统托盘（轻量，无 GUI 框架依赖） |
 
 ### 主控端
 
@@ -317,16 +318,16 @@ A: 确认手机和电脑在**同一 Wi-Fi** 下，且服务端正在运行。部
 A: 磁力计初始化需要 1~2 秒，启动后稍等片刻再移动。若持续漂移，可在远离金属干扰的环境下使用。
 
 **Q: 如何设置密码？**
-A: 点击托盘图标 → 「设置...」，在设置窗口中修改密码，保存后即时生效。也可直接编辑 `server.conf` 中的 `password=` 字段后重启。
+A: 点击托盘图标 → 「设置...」，浏览器会打开本地配置页，修改密码后点「保存」即时生效。也可直接编辑 `server.conf` 中的 `password=` 字段后重启。
 
 **Q: 想更改监听端口？**
-A: 点击托盘图标 → 「设置...」修改端口后保存，**需重启服务端**生效。主控端连接界面的「端口」字段同步修改。
+A: 点击托盘图标 → 「设置...」，在网页中修改端口后保存，**需重启服务端**生效。主控端连接界面的「端口」字段同步修改。
 
 **Q: 如何设置开机自启动？**
 A: 点击托盘图标 → 「开机自启动」切换开关即可。macOS 通过 LaunchAgent 实现，Windows 写入注册表 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，Linux 生成 systemd user service。
 
 **Q: 服务器环境没有图形界面怎么办？**
-A: 使用 `-nogui` 参数启动，跳过 Fyne 托盘，仅命令行运行：`./lan-remote-server -nogui`。
+A: 使用 `-nogui` 参数启动，跳过托盘和网页配置服务，仅命令行运行：`./lan-remote-server -nogui`。
 
 ---
 

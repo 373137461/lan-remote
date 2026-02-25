@@ -30,6 +30,6 @@ func setAutoStart(enabled bool) error {
 	} else {
 		cmd = exec.Command("reg", "delete", regKeyPath, "/v", regValueName, "/f")
 	}
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideConsoleWindow: true}
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x08000000} // CREATE_NO_WINDOW
 	return cmd.Run()
 }

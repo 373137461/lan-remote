@@ -327,9 +327,10 @@ func main() {
 		return
 	}
 
-	// GUI 模式：UDP 服务器在后台 goroutine 运行，主线程运行 Fyne（托盘 + 设置窗口）
+	// GUI 模式：UDP 服务器在后台 goroutine 运行，主线程运行系统托盘
 	go runUDPServer()
-	runFyneApp()
+	startWebConfig()
+	runTray()
 }
 
 // runUDPServer 启动 UDP 监听循环（阻塞）
