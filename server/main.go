@@ -3,6 +3,7 @@ package main
 import (
 	_ "embed"
 	"encoding/binary"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -80,11 +81,14 @@ type serverConfig struct {
 	logFile  string
 }
 
-// ── 全局可变配置（支持设置窗口实时修改密码/超时） ──
+// ── 全局可变配置（支持设置窗口实时修改密码/超时/端口） ──
 var (
 	cfgMu    sync.RWMutex
 	gCfg     serverConfig
 	gConfPath string
+
+	currentUDPConnMu sync.Mutex
+	currentUDPConn   *net.UDPConn
 )
 
 func getCfg() serverConfig {
@@ -97,6 +101,18 @@ func updateCfg(c serverConfig) {
 	cfgMu.Lock()
 	gCfg = c
 	cfgMu.Unlock()
+}
+
+// restartUDPServer 关闭当前 UDP 监听，稍等后以新配置重新启动（用于端口热切换）。
+func restartUDPServer() {
+	currentUDPConnMu.Lock()
+	conn := currentUDPConn
+	currentUDPConnMu.Unlock()
+	if conn != nil {
+		conn.Close()
+	}
+	time.Sleep(150 * time.Millisecond)
+	go runUDPServer()
 }
 
 // loadConfig 读取 key=value 格式配置文件，解析失败时使用默认值
@@ -327,7 +343,8 @@ func main() {
 		return
 	}
 
-	// GUI 模式：UDP 服务器在后台 goroutine 运行，主线程运行系统托盘
+	// 默认 GUI 模式：隐藏命令行窗口，UDP 服务器在后台运行，主线程运行系统托盘
+	hideConsoleWindow()
 	go runUDPServer()
 	startWebConfig()
 	runTray()
@@ -339,13 +356,27 @@ func runUDPServer() {
 	addr := fmt.Sprintf(":%d", cfg.port)
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
-		log.Fatalf("解析地址失败: %v", err)
+		log.Printf("解析地址失败: %v", err)
+		return
 	}
 	conn, err := net.ListenUDP("udp", udpAddr)
 	if err != nil {
-		log.Fatalf("监听 UDP 失败: %v", err)
+		log.Printf("监听 UDP 失败: %v", err)
+		return
 	}
-	defer conn.Close()
+
+	currentUDPConnMu.Lock()
+	currentUDPConn = conn
+	currentUDPConnMu.Unlock()
+
+	defer func() {
+		conn.Close()
+		currentUDPConnMu.Lock()
+		if currentUDPConn == conn {
+			currentUDPConn = nil
+		}
+		currentUDPConnMu.Unlock()
+	}()
 
 	// 定期打印连接用户表
 	go func() {
@@ -359,7 +390,13 @@ func runUDPServer() {
 	buf := make([]byte, bufferSize)
 	for {
 		n, remoteAddr, err := conn.ReadFromUDP(buf)
-		if err != nil || n < 1 {
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return // 连接被主动关闭（热重启），正常退出
+			}
+			continue
+		}
+		if n < 1 {
 			continue
 		}
 		data := make([]byte, n)

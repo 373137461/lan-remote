@@ -46,7 +46,7 @@ button:hover{background:#0066d6}
   <div class="field">
     <label>UDP 端口</label>
     <input type="number" name="port" value="{{.Port}}" min="1" max="65535">
-    <p class="hint">默认 8888，更改后需重启服务端生效</p>
+    <p class="hint">默认 8888，更改后立即生效（当前连接将自动重建）</p>
   </div>
   <div class="field">
     <label>超时阈值（毫秒）</label>
@@ -140,7 +140,8 @@ func handleConfigSave(w http.ResponseWriter, r *http.Request) {
 	updateCfg(newCfg)
 
 	if portChanged {
-		renderPage(w, newCfg, "✓ 已保存。端口更改将在重启后生效。", "warn")
+		go restartUDPServer()
+		renderPage(w, newCfg, "✓ 已保存，端口已切换（重新连接主控端即可）", "ok")
 	} else {
 		renderPage(w, newCfg, "✓ 已保存并生效", "ok")
 	}
