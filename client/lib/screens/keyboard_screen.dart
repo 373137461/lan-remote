@@ -21,10 +21,6 @@ class _KeyboardScreenState extends State<KeyboardScreen>
   final _textController = TextEditingController();
   late final TabController _tabController;
 
-  // 音量滑块：0~20 共 21 档（初始居中 = 10）
-  double _volumeSlider = 10;
-  int _lastVolumeStep = 10;
-
   // 文本输入模式：false=剪贴板粘贴（默认），true=逐字输入
   bool _useTypeStr = false;
   static const _keyTypeStr = 'kb_use_typestr';
@@ -65,19 +61,6 @@ class _KeyboardScreenState extends State<KeyboardScreen>
         behavior: SnackBarBehavior.floating,
       ),
     );
-  }
-
-  /// 滑块变化时，根据步数差向被控端发送对应数量的音量键
-  void _onVolumeChanged(double value) {
-    final newStep = value.round();
-    final delta = newStep - _lastVolumeStep;
-    if (delta == 0) return;
-    final keycode = delta > 0 ? KeyCodes.volUp : KeyCodes.volDown;
-    for (int i = 0; i < delta.abs(); i++) {
-      widget.udpService.sendKeyTap(keycode);
-    }
-    _lastVolumeStep = newStep;
-    setState(() => _volumeSlider = value);
   }
 
   /// 系统操作（带确认弹窗）
@@ -145,28 +128,46 @@ class _KeyboardScreenState extends State<KeyboardScreen>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // F1-F10 横向滚动行
+          // F1-F12（带 OS 默认功能提示）
           _buildFKeyRow(),
           const SizedBox(height: 10),
 
-          // 原有功能键网格（含方向键、F11/F12、媒体键）
-          ...keyboardLayout.map((row) => Padding(
-            padding: const EdgeInsets.only(bottom: 10),
-            child: Row(
-              children: row.map((btn) => Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 4),
-                  child: _KeyTile(
-                    label: btn.icon.isNotEmpty ? btn.icon : btn.label,
-                    sublabel: btn.icon.isNotEmpty ? btn.label : null,
-                    onTap: () => widget.udpService.sendKeyTap(btn.keycode),
-                  ),
-                ),
-              )).toList(),
-            ),
-          )),
+          // 控制键
+          _buildKeyRow([
+            (icon: '⎋', label: 'Esc',   code: KeyCodes.escape),
+            (icon: '⇥', label: 'Tab',   code: KeyCodes.tab),
+            (icon: '⌫', label: '退格',  code: KeyCodes.backspace),
+            (icon: '⌦', label: 'Del',   code: KeyCodes.delete),
+            (icon: '↵', label: 'Enter', code: KeyCodes.enter),
+          ]),
+          const SizedBox(height: 10),
 
+          // 导航键
+          _buildKeyRow([
+            (icon: '↖', label: 'Home',  code: KeyCodes.home),
+            (icon: '↘', label: 'End',   code: KeyCodes.end),
+            (icon: '⇑', label: 'PgUp',  code: KeyCodes.pageUp),
+            (icon: '⇓', label: 'PgDn',  code: KeyCodes.pageDown),
+          ]),
+          const SizedBox(height: 10),
+
+          // 方向键
+          _buildKeyRow([
+            (icon: '←', label: '左', code: KeyCodes.arrowLeft),
+            (icon: '↑', label: '上', code: KeyCodes.arrowUp),
+            (icon: '↓', label: '下', code: KeyCodes.arrowDown),
+            (icon: '→', label: '右', code: KeyCodes.arrowRight),
+          ]),
+          const SizedBox(height: 10),
+
+          // 媒体键
+          _buildKeyRow([
+            (icon: '⏮', label: '上一首',   code: KeyCodes.prevTrack),
+            (icon: '⏯', label: '播放/暂停', code: KeyCodes.playPause),
+            (icon: '⏭', label: '下一首',   code: KeyCodes.nextTrack),
+          ]),
           const SizedBox(height: 12),
+
           _buildVolumeSlider(),
           const SizedBox(height: 12),
           _buildEditShortcuts(),
@@ -177,32 +178,66 @@ class _KeyboardScreenState extends State<KeyboardScreen>
     );
   }
 
+  Widget _buildKeyRow(
+      List<({String icon, String label, int code})> keys) {
+    return Row(
+      children: keys
+          .map((k) => Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  child: _KeyTile(
+                    label: k.icon,
+                    sublabel: k.label,
+                    onTap: () => widget.udpService.sendKeyTap(k.code),
+                  ),
+                ),
+              ))
+          .toList(),
+    );
+  }
+
+  /// F1-F12 横向滚动行，根据服务端 OS 显示默认系统功能名称
   Widget _buildFKeyRow() {
-    const fKeys = [
-      (label: 'F1',  keycode: KeyCodes.f1),
-      (label: 'F2',  keycode: KeyCodes.f2),
-      (label: 'F3',  keycode: KeyCodes.f3),
-      (label: 'F4',  keycode: KeyCodes.f4),
-      (label: 'F5',  keycode: KeyCodes.f5),
-      (label: 'F6',  keycode: KeyCodes.f6),
-      (label: 'F7',  keycode: KeyCodes.f7),
-      (label: 'F8',  keycode: KeyCodes.f8),
-      (label: 'F9',  keycode: KeyCodes.f9),
-      (label: 'F10', keycode: KeyCodes.f10),
+    final os = widget.udpService.serverOs;
+
+    // macOS 默认 F 键功能
+    const macLabels = {
+      1: '亮度-',  2: '亮度+',  3: '调度中心', 4: '启动台',
+      5: '听写',   6: '勿扰',   7: '上一首',  8: '播放',
+      9: '下一首', 10: '静音',  11: '音量-',  12: '音量+',
+    };
+    // Windows 有默认功能的 F 键
+    const winLabels = {
+      1: '帮助', 2: '重命名', 3: '搜索',  4: '地址栏',
+      5: '刷新', 6: '切换',  10: '菜单', 11: '全屏',
+    };
+
+    String? subLabel(int n) {
+      if (os == 1) return macLabels[n];
+      if (os == 0) return winLabels[n];
+      return null;
+    }
+
+    final keycodes = [
+      KeyCodes.f1, KeyCodes.f2,  KeyCodes.f3,  KeyCodes.f4,
+      KeyCodes.f5, KeyCodes.f6,  KeyCodes.f7,  KeyCodes.f8,
+      KeyCodes.f9, KeyCodes.f10, KeyCodes.f11, KeyCodes.f12,
     ];
+
     return SizedBox(
-      height: 48,
+      height: 58,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
-        itemCount: fKeys.length,
+        itemCount: 12,
         separatorBuilder: (_, _) => const SizedBox(width: 8),
         itemBuilder: (_, i) {
-          final key = fKeys[i];
+          final n = i + 1;
           return SizedBox(
             width: 52,
             child: _KeyTile(
-              label: key.label,
-              onTap: () => widget.udpService.sendKeyTap(key.keycode),
+              label: 'F$n',
+              sublabel: subLabel(n),
+              onTap: () => widget.udpService.sendKeyTap(keycodes[i]),
             ),
           );
         },
@@ -259,57 +294,11 @@ class _KeyboardScreenState extends State<KeyboardScreen>
   }
 
   Widget _buildVolumeSlider() {
-    final pct = (_volumeSlider / 20 * 100).round();
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: const Color(0xFF16213E),
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.volume_up, color: Color(0xFF2D6CDF), size: 16),
-              const SizedBox(width: 6),
-              const Text('音量控制', style: TextStyle(color: Colors.white70, fontSize: 13)),
-              const Spacer(),
-              Text('$pct%', style: const TextStyle(color: Colors.white38, fontSize: 12)),
-              const SizedBox(width: 8),
-              GestureDetector(
-                onTap: () => widget.udpService.sendKeyTap(KeyCodes.mute),
-                child: const Tooltip(
-                  message: '静音',
-                  child: Icon(Icons.volume_off, color: Colors.white38, size: 18),
-                ),
-              ),
-            ],
-          ),
-          Row(
-            children: [
-              const Icon(Icons.volume_down, color: Colors.white24, size: 20),
-              Expanded(
-                child: Slider(
-                  value: _volumeSlider,
-                  min: 0,
-                  max: 20,
-                  divisions: 20,
-                  activeColor: const Color(0xFF2D6CDF),
-                  inactiveColor: Colors.white12,
-                  onChanged: _onVolumeChanged,
-                ),
-              ),
-              const Icon(Icons.volume_up, color: Colors.white24, size: 20),
-            ],
-          ),
-          const Text(
-            '左右拖动调节音量，每格 = 1 次音量键',
-            style: TextStyle(color: Colors.white24, fontSize: 11),
-          ),
-        ],
-      ),
-    );
+    return _buildKeyRow([
+      (icon: '🔉', label: '音量-', code: KeyCodes.volDown),
+      (icon: '🔇', label: '静音',  code: KeyCodes.mute),
+      (icon: '🔊', label: '音量+', code: KeyCodes.volUp),
+    ]);
   }
 
   Widget _buildSystemShortcuts() {

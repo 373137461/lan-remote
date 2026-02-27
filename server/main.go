@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -57,7 +58,6 @@ const (
 	// 窗口管理
 	sysTaskView    = byte(0x0D) // 任务视图（Win+Tab / Mission Control）
 	sysShowDesktop = byte(0x0E) // 显示桌面（Win+D / Ctrl+F3）
-
 	// 鼠标按键
 	btnLeft   = 0x00
 	btnRight  = 0x01
@@ -306,20 +306,32 @@ func main() {
 		gCfg.logFile = *logFlag
 	}
 
-	// 配置操作日志输出
-	if gCfg.logFile != "" {
-		f, err := os.OpenFile(gCfg.logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	// 确定日志文件路径：优先使用 -log 参数或配置文件，默认写到程序目录下 server.log
+	logPath := gCfg.logFile
+	if logPath == "" {
+		if exePath, err := os.Executable(); err == nil {
+			logPath = filepath.Join(filepath.Dir(exePath), "server.log")
+		}
+	}
+
+	// 配置操作日志输出：始终写入文件；nogui 模式同时输出到控制台
+	if logPath != "" {
+		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 		if err != nil {
-			log.Fatalf("无法打开日志文件 %s: %v", gCfg.logFile, err)
+			fmt.Printf("⚠️  无法打开日志文件 %s: %v\n", logPath, err)
+			opLog = func(format string, args ...any) { fmt.Printf(format+"\n", args...) }
+		} else {
+			defer f.Close()
+			if *noGUI {
+				log.SetOutput(io.MultiWriter(os.Stdout, f))
+			} else {
+				log.SetOutput(f)
+			}
+			log.SetFlags(log.LstdFlags)
+			opLog = log.Printf
 		}
-		defer f.Close()
-		log.SetOutput(io.MultiWriter(f))
-		log.SetFlags(log.LstdFlags)
-		opLog = log.Printf
 	} else {
-		opLog = func(format string, args ...any) {
-			fmt.Printf(format+"\n", args...)
-		}
+		opLog = func(format string, args ...any) { fmt.Printf(format+"\n", args...) }
 	}
 
 	cfg := getCfg()
@@ -327,15 +339,12 @@ func main() {
 	if cfg.password != "" {
 		authMode = "已启用密码保护"
 	}
-	logMode := "控制台"
-	if cfg.logFile != "" {
-		logMode = cfg.logFile
-	}
 	fmt.Printf("===== 局域网键鼠遥控器 - 被控端 =====\n")
 	fmt.Printf("系统: %s/%s\n", runtime.GOOS, runtime.GOARCH)
 	fmt.Printf("监听端口: %d  超时: %dms  认证: %s\n", cfg.port, cfg.timeout, authMode)
-	fmt.Printf("操作日志: %s\n", logMode)
+	fmt.Printf("日志文件: %s\n", logPath)
 	fmt.Printf("======================================\n\n")
+	opLog("===== 服务启动 OS=%s 端口=%d 认证=%s =====", runtime.GOOS, cfg.port, authMode)
 
 	if *noGUI {
 		// 纯命令行模式：UDP 服务器在主 goroutine 阻塞运行
@@ -414,6 +423,8 @@ func handlePacket(conn *net.UDPConn, addr *net.UDPAddr, data []byte) {
 	// ── 时间同步握手 (0x00) ──
 	// 请求: [0x00] + [pwd_len 1B] + [password UTF-8]
 	// 响应: [0x00] + [timestamp 8B] + [os 1B] + [auth 1B]
+	//       + [hostname_len 2B] + [hostname UTF-8]
+	//       + [mac_count 1B] + [mac1 6B] + [mac2 6B] + ...  (auth=OK 时才附加)
 	if cmd == cmdTimeSync {
 		providedPwd := ""
 		if len(data) >= 2 {
@@ -442,6 +453,12 @@ func handlePacket(conn *net.UDPConn, addr *net.UDPAddr, data []byte) {
 		binary.BigEndian.PutUint64(reply[1:9], uint64(now))
 		reply[9] = getOSByte()
 		reply[10] = authResult
+
+		// 认证成功时附加主机名与网卡 MAC
+		if authResult == authOK {
+			reply = append(reply, buildDeviceInfo()...)
+		}
+
 		conn.WriteToUDP(reply, addr) //nolint:errcheck
 		return
 	}
@@ -515,8 +532,15 @@ func handlePacket(conn *net.UDPConn, addr *net.UDPAddr, data []byte) {
 
 	case cmdKeyTap:
 		if len(data) >= 10 {
-			if keyName, ok := keyMap[data[9]]; ok {
+			code := data[9]
+			if keyName, ok := keyMap[code]; ok {
 				robotgo.KeyTap(keyName)
+				opLog("[%s] 按键: %s", ip, keyName)
+			} else if code >= 32 && code <= 126 {
+				// ASCII 可打印字符直接使用（用于 VLC 等应用单键快捷键）
+				ch := string(rune(code))
+				robotgo.KeyTap(ch)
+				opLog("[%s] 按键(ASCII): %s", ip, ch)
 			}
 		}
 
@@ -545,7 +569,9 @@ func handlePacket(conn *net.UDPConn, addr *net.UDPAddr, data []byte) {
 
 	case cmdSysAction:
 		if len(data) >= 10 {
-			sysAction(data[9])
+			action := data[9]
+			opLog("[%s] 系统操作: %s", ip, sysActionName(action))
+			sysAction(action)
 		}
 	}
 }
@@ -591,6 +617,27 @@ func keyCombo(mod, key string) {
 	robotgo.KeyTap(key)
 	time.Sleep(20 * time.Millisecond)
 	robotgo.KeyUp(mod)
+}
+
+// sysActionName 返回系统操作的可读名称（用于日志）
+func sysActionName(action byte) string {
+	switch action {
+	case sysLock:       return "锁屏"
+	case sysSleep:      return "睡眠"
+	case sysShutdown:   return "关机"
+	case sysRestart:    return "重启"
+	case sysSwitchApp:  return "切换应用"
+	case sysScreenshot: return "截图"
+	case sysSelectAll:  return "全选"
+	case sysCopy:       return "复制"
+	case sysCut:        return "剪切"
+	case sysUndo:       return "撤销"
+	case sysRedo:       return "重做"
+	case sysSave:       return "保存"
+	case sysTaskView:   return "任务视图"
+	case sysShowDesktop: return "显示桌面"
+	default:            return fmt.Sprintf("未知(0x%02X)", action)
+	}
 }
 
 // sysAction 执行平台相关的系统操作
@@ -708,4 +755,37 @@ func sysAction(action byte) {
 			log.Printf("系统操作失败: %v", err)
 		}
 	}
+}
+
+// buildDeviceInfo 构建设备信息附加段：
+//   [hostname_len 2B][hostname UTF-8][mac_count 1B][mac1 6B]...
+func buildDeviceInfo() []byte {
+	hostname, _ := os.Hostname()
+	hnBytes := []byte(hostname)
+
+	// 收集非 loopback 的物理网卡 MAC（6字节）
+	ifaces, _ := net.Interfaces()
+	var macs [][]byte
+	for _, iface := range ifaces {
+		if len(iface.HardwareAddr) != 6 {
+			continue
+		}
+		if iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		mac := make([]byte, 6)
+		copy(mac, iface.HardwareAddr)
+		macs = append(macs, mac)
+	}
+
+	buf := make([]byte, 0, 3+len(hnBytes)+len(macs)*6)
+	// hostname
+	buf = append(buf, byte(len(hnBytes)>>8), byte(len(hnBytes)))
+	buf = append(buf, hnBytes...)
+	// MACs
+	buf = append(buf, byte(len(macs)))
+	for _, mac := range macs {
+		buf = append(buf, mac...)
+	}
+	return buf
 }

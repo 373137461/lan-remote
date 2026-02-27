@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -22,6 +23,12 @@ class UdpService {
 
   /// 服务端 OS：0=Windows, 1=macOS, 2=Linux, -1=未知
   int serverOs = -1;
+
+  /// 服务端主机名（连接成功后由握手响应填充）
+  String serverHostname = '';
+
+  /// 服务端网卡 MAC 地址列表（格式 "aa:bb:cc:dd:ee:ff"）
+  List<String> serverMacAddresses = [];
 
   /// 上次连接的错误原因
   ConnectError lastError = ConnectError.none;
@@ -51,6 +58,8 @@ class UdpService {
     await disconnect();
     lastError = ConnectError.none;
     serverOs = -1;
+    serverHostname = '';
+    serverMacAddresses = [];
 
     try {
       _targetIp = InternetAddress(ip);
@@ -159,6 +168,7 @@ class UdpService {
               completer.complete(false);
               return;
             }
+            _parseDeviceInfo(data);
             completer.complete(true);
           } else if (data.length >= 9) {
             // 兼容旧服务端（无 OS/auth 字节）
@@ -265,6 +275,35 @@ class UdpService {
   // action: 0x01=锁屏, 0x02=睡眠, 0x03=关机, 0x04=重启
   //         0x05=切换应用, 0x06=截图
   void sendSysAction(int action) => sendCommand(0x0A, [action & 0xFF]);
+
+  /// 解析时间同步响应中的扩展设备信息（offset 11 之后）：
+  ///   [hostname_len 2B][hostname UTF-8][mac_count 1B][mac1 6B]...
+  void _parseDeviceInfo(Uint8List data) {
+    try {
+      int offset = 11;
+      if (data.length < offset + 2) return;
+
+      final hostnameLen = (data[offset] << 8) | data[offset + 1];
+      offset += 2;
+      if (hostnameLen > 0 && data.length >= offset + hostnameLen) {
+        serverHostname = utf8.decode(data.sublist(offset, offset + hostnameLen));
+        offset += hostnameLen;
+      }
+
+      if (data.length <= offset) return;
+      final macCount = data[offset++];
+      serverMacAddresses = [];
+      for (int i = 0; i < macCount; i++) {
+        if (data.length < offset + 6) break;
+        final mac = data
+            .sublist(offset, offset + 6)
+            .map((b) => b.toRadixString(16).padLeft(2, '0'))
+            .join(':');
+        serverMacAddresses.add(mac);
+        offset += 6;
+      }
+    } catch (_) {}
+  }
 
   List<int> _encodeUtf8(String s) {
     final out = <int>[];
