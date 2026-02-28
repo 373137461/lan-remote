@@ -33,6 +33,10 @@ class UdpService {
   /// 上次连接的错误原因
   ConnectError lastError = ConnectError.none;
 
+  /// 自定义快捷键列表（登录后拉取，name 非空表示有效）
+  List<Map<String, dynamic>> customShortcuts = [];
+  Completer<void>? _shortcutsCompleter;
+
   bool _connected = false;
   bool get isConnected => _connected;
 
@@ -87,6 +91,8 @@ class UdpService {
     timeOffset = 0;
     latencyMs = -1;
     _latencyController.add(-1);
+    customShortcuts = [];
+    _shortcutsCompleter = null;
   }
 
   // ── 心跳管理 ──
@@ -192,6 +198,22 @@ class UdpService {
             _latencyController.add(rtt);
           }
         }
+      } else if (cmd == 0x11) {
+        // 自定义快捷键响应：[0x11][json_len 2B][json UTF-8]
+        final comp = _shortcutsCompleter;
+        if (comp != null && !comp.isCompleted) {
+          try {
+            if (data.length >= 3) {
+              final jsonLen = (data[1] << 8) | data[2];
+              if (jsonLen > 0 && data.length >= 3 + jsonLen) {
+                final jsonStr = utf8.decode(data.sublist(3, 3 + jsonLen));
+                final list = jsonDecode(jsonStr) as List;
+                customShortcuts = list.cast<Map<String, dynamic>>();
+              }
+            }
+          } catch (_) {}
+          comp.complete();
+        }
       }
     });
 
@@ -274,7 +296,23 @@ class UdpService {
   // ── 系统操作 ──
   // action: 0x01=锁屏, 0x02=睡眠, 0x03=关机, 0x04=重启
   //         0x05=切换应用, 0x06=截图
+  //         0x20–0x29=自定义快捷键 1–10
   void sendSysAction(int action) => sendCommand(0x0A, [action & 0xFF]);
+
+  /// 向服务端请求自定义快捷键列表（0x11），连接成功后调用
+  Future<void> fetchShortcuts() async {
+    if (_socket == null || _targetIp == null || !_connected) return;
+    customShortcuts = [];
+    _shortcutsCompleter = Completer<void>();
+    try {
+      _socket!.send(Uint8List.fromList([0x11]), _targetIp!, _targetPort);
+      await _shortcutsCompleter!.future.timeout(
+        const Duration(seconds: 3),
+        onTimeout: () {},
+      );
+    } catch (_) {}
+    _shortcutsCompleter = null;
+  }
 
   /// 解析时间同步响应中的扩展设备信息（offset 11 之后）：
   ///   [hostname_len 2B][hostname UTF-8][mac_count 1B][mac1 6B]...

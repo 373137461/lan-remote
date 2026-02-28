@@ -25,17 +25,27 @@ class _KeyboardScreenState extends State<KeyboardScreen>
   bool _useTypeStr = false;
   static const _keyTypeStr = 'kb_use_typestr';
 
+  // 自定义快捷键（从服务端拉取）
+  List<Map<String, dynamic>> _customShortcuts = [];
+
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
     _loadInputMode();
+    _loadCustomShortcuts();
   }
 
   Future<void> _loadInputMode() async {
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
     setState(() => _useTypeStr = prefs.getBool(_keyTypeStr) ?? false);
+  }
+
+  Future<void> _loadCustomShortcuts() async {
+    await widget.udpService.fetchShortcuts();
+    if (!mounted) return;
+    setState(() => _customShortcuts = widget.udpService.customShortcuts);
   }
 
   @override
@@ -171,7 +181,11 @@ class _KeyboardScreenState extends State<KeyboardScreen>
           _buildVolumeSlider(),
           const SizedBox(height: 12),
           _buildEditShortcuts(),
-          const SizedBox(height: 20),
+          if (_customShortcuts.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            _buildCustomShortcuts(),
+          ],
+          const SizedBox(height: 12),
           _buildSystemShortcuts(),
         ],
       ),
@@ -299,6 +313,47 @@ class _KeyboardScreenState extends State<KeyboardScreen>
       (icon: '🔇', label: '静音',  code: KeyCodes.mute),
       (icon: '🔊', label: '音量+', code: KeyCodes.volUp),
     ]);
+  }
+
+  Widget _buildCustomShortcuts() {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF16213E),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.stars_outlined, color: Color(0xFF2D6CDF), size: 16),
+              SizedBox(width: 6),
+              Text('自定义快捷键', style: TextStyle(color: Colors.white70, fontSize: 13)),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: _customShortcuts.map((sc) {
+              final idx = sc['idx'] as int;
+              final name = sc['name'] as String;
+              final desc = (sc['desc'] as String?) ?? '';
+              final chip = _SysChip(
+                label: name,
+                icon: Icons.bolt_outlined,
+                onTap: () => widget.udpService.sendSysAction(0x20 + idx),
+              );
+              if (desc.isNotEmpty) {
+                return Tooltip(message: desc, child: chip);
+              }
+              return chip as Widget;
+            }).toList(),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildSystemShortcuts() {

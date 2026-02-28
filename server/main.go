@@ -3,6 +3,7 @@ package main
 import (
 	_ "embed"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -40,6 +41,7 @@ const (
 	cmdTextInputDirect = 0x09 // 逐字输入（TypeStr，不经剪贴板）
 	cmdSysAction       = 0x0A // 系统操作
 	cmdPing            = 0x10 // 心跳
+	cmdGetShortcuts    = 0x11 // 获取自定义快捷键列表
 
 	// 系统操作码
 	sysLock      = byte(0x01)
@@ -58,6 +60,9 @@ const (
 	// 窗口管理
 	sysTaskView    = byte(0x0D) // 任务视图（Win+Tab / Mission Control）
 	sysShowDesktop = byte(0x0E) // 显示桌面（Win+D / Ctrl+F3）
+	// 自定义快捷键（0x20–0x29，共 10 个）
+	sysCustom1  = byte(0x20)
+	sysCustom10 = byte(0x29)
 	// 鼠标按键
 	btnLeft   = 0x00
 	btnRight  = 0x01
@@ -73,12 +78,20 @@ const (
 	authFail = byte(0x01)
 )
 
+// customShortcut 单条自定义快捷键配置
+type customShortcut struct {
+	name string // 名称（可含 emoji），非空时在 App 中显示
+	desc string // 说明（可选）
+	keys string // 快捷键字符串，如 "command+shift+a"
+}
+
 // serverConfig 从配置文件读取的运行参数
 type serverConfig struct {
-	password string
-	timeout  int64
-	port     int
-	logFile  string
+	password        string
+	timeout         int64
+	port            int
+	logFile         string
+	customShortcuts [10]customShortcut
 }
 
 // ── 全局可变配置（支持设置窗口实时修改密码/超时/端口） ──
@@ -148,6 +161,23 @@ func loadConfig(path string) serverConfig {
 			}
 		case "log_file":
 			cfg.logFile = v
+		default:
+			// 自定义快捷键：custom_N_name / custom_N_desc / custom_N_keys（N=1..10）
+			for i := 1; i <= 10; i++ {
+				prefix := fmt.Sprintf("custom_%d_", i)
+				if strings.HasPrefix(k, prefix) {
+					idx := i - 1
+					switch k[len(prefix):] {
+					case "name":
+						cfg.customShortcuts[idx].name = v
+					case "desc":
+						cfg.customShortcuts[idx].desc = v
+					case "keys":
+						cfg.customShortcuts[idx].keys = v
+					}
+					break
+				}
+			}
 		}
 	}
 	return cfg
@@ -168,6 +198,17 @@ func saveConfig(path string, cfg serverConfig) error {
 	}
 	if cfg.logFile != "" {
 		lines = append(lines, "", "# 操作日志文件路径", "log_file="+cfg.logFile)
+	}
+	// 自定义快捷键（名称为空表示该槽未配置）
+	lines = append(lines, "", "# 自定义快捷键（名称不为空则在 App 中显示；快捷键格式如 command+shift+a）")
+	for i := 0; i < 10; i++ {
+		sc := cfg.customShortcuts[i]
+		n := i + 1
+		lines = append(lines,
+			fmt.Sprintf("custom_%d_name=%s", n, sc.name),
+			fmt.Sprintf("custom_%d_desc=%s", n, sc.desc),
+			fmt.Sprintf("custom_%d_keys=%s", n, sc.keys),
+		)
 	}
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
 }
@@ -485,6 +526,12 @@ func handlePacket(conn *net.UDPConn, addr *net.UDPAddr, data []byte) {
 		return
 	}
 
+	// ── 获取自定义快捷键 (0x11) ── 无需时间戳，单字节请求
+	if cmd == cmdGetShortcuts {
+		conn.WriteToUDP(buildShortcutsReply(), addr) //nolint:errcheck
+		return
+	}
+
 	// 其他指令：最短 9 字节（cmd 1B + timestamp 8B）
 	if len(data) < 9 {
 		return
@@ -636,12 +683,27 @@ func sysActionName(action byte) string {
 	case sysSave:       return "保存"
 	case sysTaskView:   return "任务视图"
 	case sysShowDesktop: return "显示桌面"
-	default:            return fmt.Sprintf("未知(0x%02X)", action)
+	default:
+		if action >= sysCustom1 && action <= sysCustom10 {
+			idx := int(action - sysCustom1)
+			cfg := getCfg()
+			if cfg.customShortcuts[idx].name != "" {
+				return "自定义:" + cfg.customShortcuts[idx].name
+			}
+			return fmt.Sprintf("自定义快捷键%d", idx+1)
+		}
+		return fmt.Sprintf("未知(0x%02X)", action)
 	}
 }
 
 // sysAction 执行平台相关的系统操作
 func sysAction(action byte) {
+	// ── 自定义快捷键 ──
+	if action >= sysCustom1 && action <= sysCustom10 {
+		execCustomShortcut(int(action - sysCustom1))
+		return
+	}
+
 	// ── 跨平台编辑快捷键 ──
 	mod := modKey()
 	switch action {
@@ -788,4 +850,96 @@ func buildDeviceInfo() []byte {
 		buf = append(buf, mac...)
 	}
 	return buf
+}
+
+// ── 自定义快捷键 ──
+
+// shortcutItem 用于 JSON 序列化返回给 App
+type shortcutItem struct {
+	Idx  int    `json:"idx"`
+	Name string `json:"name"`
+	Desc string `json:"desc"`
+	Keys string `json:"keys"`
+}
+
+// buildShortcutsReply 构建 0x11 响应包：[0x11][json_len 2B][json UTF-8]
+func buildShortcutsReply() []byte {
+	cfg := getCfg()
+	items := make([]shortcutItem, 0, 10)
+	for i, sc := range cfg.customShortcuts {
+		if sc.name == "" {
+			continue
+		}
+		items = append(items, shortcutItem{Idx: i, Name: sc.name, Desc: sc.desc, Keys: sc.keys})
+	}
+	jsonBytes, _ := json.Marshal(items)
+	buf := make([]byte, 0, 3+len(jsonBytes))
+	buf = append(buf, cmdGetShortcuts)
+	buf = append(buf, byte(len(jsonBytes)>>8), byte(len(jsonBytes)))
+	buf = append(buf, jsonBytes...)
+	return buf
+}
+
+// mapModifier 将快捷键字符串中的修饰键名映射到当前平台对应的 robotgo 键名
+func mapModifier(m string) string {
+	switch strings.ToLower(strings.TrimSpace(m)) {
+	case "command", "cmd":
+		if runtime.GOOS == "darwin" {
+			return "command"
+		}
+		return "ctrl"
+	case "ctrl", "control":
+		return "ctrl"
+	case "alt", "option":
+		return "alt"
+	case "shift":
+		return "shift"
+	case "win", "super", "meta":
+		if runtime.GOOS == "windows" {
+			return "lwin"
+		}
+		if runtime.GOOS == "darwin" {
+			return "command"
+		}
+		return "super"
+	}
+	return strings.ToLower(strings.TrimSpace(m))
+}
+
+// executeShortcutString 解析并执行 "command+shift+a" 格式的快捷键字符串
+func executeShortcutString(keys string) {
+	keys = strings.TrimSpace(keys)
+	if keys == "" {
+		return
+	}
+	parts := strings.Split(keys, "+")
+	if len(parts) == 0 {
+		return
+	}
+	key := strings.ToLower(strings.TrimSpace(parts[len(parts)-1]))
+	mods := parts[:len(parts)-1]
+
+	for _, m := range mods {
+		robotgo.KeyDown(mapModifier(m))
+		time.Sleep(15 * time.Millisecond)
+	}
+	robotgo.KeyTap(key)
+	time.Sleep(15 * time.Millisecond)
+	for i := len(mods) - 1; i >= 0; i-- {
+		robotgo.KeyUp(mapModifier(mods[i]))
+		time.Sleep(15 * time.Millisecond)
+	}
+}
+
+// execCustomShortcut 执行第 idx 个自定义快捷键（0-based）
+func execCustomShortcut(idx int) {
+	if idx < 0 || idx >= 10 {
+		return
+	}
+	cfg := getCfg()
+	sc := cfg.customShortcuts[idx]
+	if sc.name == "" || sc.keys == "" {
+		return
+	}
+	executeShortcutString(sc.keys)
 }
