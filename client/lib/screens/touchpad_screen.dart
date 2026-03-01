@@ -379,6 +379,11 @@ class _SpringScrollSliderState extends State<_SpringScrollSlider>
   double _offset = 0.0;
   double _halfTrack = 120.0;
 
+  /// 滚动累积器：每累积 _basePx 像素触发 1 次 scroll
+  /// 灵敏度越高 → 分母越小 → 同样滑动触发次数越多
+  static const double _basePx = 30.0;
+  double _scrollAcc = 0.0;
+
   late final AnimationController _springCtrl;
   Animation<double>? _springAnim;
 
@@ -403,11 +408,20 @@ class _SpringScrollSliderState extends State<_SpringScrollSlider>
     setState(() {
       _offset = (_offset + d.delta.dy).clamp(-_halfTrack, _halfTrack);
     });
-    final scroll = (-d.delta.dy * 0.4 * widget.scrollSensitivity).round();
-    if (scroll != 0) widget.onScroll(scroll);
+    // 累积滑动距离，每 (_basePx / sensitivity) 像素触发 1 次 scroll
+    _scrollAcc += -d.delta.dy * widget.scrollSensitivity;
+    while (_scrollAcc >= _basePx) {
+      widget.onScroll(1);
+      _scrollAcc -= _basePx;
+    }
+    while (_scrollAcc <= -_basePx) {
+      widget.onScroll(-1);
+      _scrollAcc += _basePx;
+    }
   }
 
   void _onDragEnd(DragEndDetails _) {
+    _scrollAcc = 0.0; // 松手时重置累积器，避免下次拖动时跨越阈值误触发
     final start = _offset;
     _springAnim = Tween<double>(begin: start, end: 0).animate(
       CurvedAnimation(parent: _springCtrl, curve: Curves.elasticOut),

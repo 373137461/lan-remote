@@ -9,12 +9,11 @@ import '../widgets/collapse_card.dart';
 
 /// 空中飞鼠模式
 ///
-/// X 轴（左右）：陀螺仪 Z 轴（偏航率）积分 + 磁力计互补滤波修正漂移
-/// Y 轴（上下）：陀螺仪 X 轴（俯仰率）直接积分（俯仰轴漂移极小）
+/// X 轴（左右）：陀螺仪 Z 轴（偏航率）直接积分
+/// Y 轴（上下）：陀螺仪 X 轴（俯仰率）直接积分
 ///
-/// 互补滤波公式：
-///   yaw_est = α × (yaw_est + gyro.z × dt) + (1-α) × mag_heading
-/// α = 0.95 → 短期响应靠陀螺仪（平滑），长期方向由磁力计修正（防漂移）
+/// 注：纯陀螺仪积分，无磁力计互补修正，避免磁力计修正引起的"回弹"问题。
+/// 磁力计数据仅用于诊断信息展示，不参与鼠标位移计算。
 class GyroScreen extends StatefulWidget {
   final UdpService udpService;
   const GyroScreen({super.key, required this.udpService});
@@ -26,9 +25,6 @@ class GyroScreen extends StatefulWidget {
 class _GyroScreenState extends State<GyroScreen> {
   static const int _throttleMs = 16; // ~60Hz
   static const double _defaultSensitivity = 8.0;
-
-  /// 互补滤波系数：越大越信任陀螺仪（响应快），越小越信任磁力计（防漂移）
-  static const double _alpha = 0.95;
 
   /// 将弧度/帧 → 像素的基础缩放因子
   static const double _radToPixel = 100.0;
@@ -48,13 +44,10 @@ class _GyroScreenState extends State<GyroScreen> {
   double _accDx = 0;
   double _accDy = 0;
 
-  // 互补滤波状态
-  double _estimatedYaw = 0;
-  double _prevYaw = 0;
-  bool _yawInitialized = false;
+  // 陀螺仪时间戳
   int _lastGyroUs = 0;
 
-  // 磁力计状态
+  // 磁力计状态（仅用于 UI 展示，不参与位移计算）
   double _magHeading = 0;
   bool _magReady = false;
 
@@ -62,7 +55,6 @@ class _GyroScreenState extends State<GyroScreen> {
   double _dispGyroZ = 0;
   double _dispGyroX = 0;
   double _dispMagDeg = 0;
-  double _dispFusedDeg = 0;
 
   @override
   void initState() {
@@ -91,14 +83,11 @@ class _GyroScreenState extends State<GyroScreen> {
 
   void _startSensors() {
     HapticFeedback.mediumImpact();
-    _yawInitialized = false;
-    _magReady = false;
     _lastGyroUs = 0;
-    _estimatedYaw = 0;
-    _prevYaw = 0;
     _accDx = 0;
     _accDy = 0;
 
+    // 磁力计：仅用于 UI 展示
     _magSub = magnetometerEventStream(
       samplingPeriod: SensorInterval.uiInterval,
     ).listen(
@@ -159,194 +148,182 @@ class _GyroScreenState extends State<GyroScreen> {
 
     if (_lastGyroUs == 0) {
       _lastGyroUs = nowUs;
-      if (_magReady) {
-        _estimatedYaw = _magHeading;
-        _prevYaw = _magHeading;
-        _yawInitialized = true;
-      }
       return;
     }
 
     final dt = (nowUs - _lastGyroUs) / 1e6;
     _lastGyroUs = nowUs;
 
-    if (!_yawInitialized && _magReady) {
-      _estimatedYaw = _magHeading;
-      _prevYaw = _magHeading;
-      _yawInitialized = true;
-    }
-
-    final gyroPredict = _estimatedYaw + event.z * dt;
-
-    double magDiff = _magHeading - gyroPredict;
-    while (magDiff > math.pi) { magDiff -= 2 * math.pi; }
-    while (magDiff < -math.pi) { magDiff += 2 * math.pi; }
-
-    _estimatedYaw = gyroPredict + (1.0 - _alpha) * magDiff;
-
-    double deltaYaw = _estimatedYaw - _prevYaw;
-    while (deltaYaw > math.pi) { deltaYaw -= 2 * math.pi; }
-    while (deltaYaw < -math.pi) { deltaYaw += 2 * math.pi; }
-    _prevYaw = _estimatedYaw;
-
-    _accDx -= deltaYaw * _sensitivity * _radToPixel;
+    // 纯陀螺仪积分：Z 轴→左右，X 轴→上下
+    // 不使用磁力计修正，避免修正引起的鼠标回弹
+    _accDx -= event.z * dt * _sensitivity * _radToPixel;
     _accDy -= event.x * dt * _sensitivity * _radToPixel;
 
     if (mounted) {
       setState(() {
         _dispGyroZ = event.z;
         _dispGyroX = event.x;
-        _dispFusedDeg = _estimatedYaw * 180 / math.pi;
       });
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        children: [
-          // ── 鼠标按键（置顶，加大） ──
-          Row(
-            children: [
-              Expanded(
-                child: _MouseButton(
-                  label: '左键',
-                  icon: Icons.mouse,
-                  onTap: () => widget.udpService.sendMouseClick(0),
-                  onLongPressStart: () => widget.udpService.sendMouseDown(0),
-                  onLongPressEnd: () => widget.udpService.sendMouseUp(0),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _MouseButton(
-                  label: '右键',
-                  icon: Icons.mouse,
-                  onTap: () => widget.udpService.sendMouseClick(1),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-
-          // ── 折叠控制面板（启动按钮 + 灵敏度） ──
-          CollapseCard(
-            expanded: _controlsExpanded,
-            onToggle: () =>
-                setState(() => _controlsExpanded = !_controlsExpanded),
-            bodyPadding: const EdgeInsets.fromLTRB(14, 0, 14, 16),
-            header: Row(
+    return Column(
+      children: [
+        // ── 可滚动内容区（控制面板 + 状态卡片 + 指南针） ──
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: Column(
               children: [
-                // 运行状态指示点
-                Container(
-                  width: 8,
-                  height: 8,
-                  margin: const EdgeInsets.only(right: 8),
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: _active ? Colors.greenAccent : Colors.white24,
-                    boxShadow: _active
-                        ? [
-                            BoxShadow(
-                              color: Colors.greenAccent.withAlpha(120),
-                              blurRadius: 6,
-                            )
-                          ]
-                        : null,
+                // ── 折叠控制面板（启动按钮 + 灵敏度） ──
+                CollapseCard(
+                  expanded: _controlsExpanded,
+                  onToggle: () =>
+                      setState(() => _controlsExpanded = !_controlsExpanded),
+                  bodyPadding: const EdgeInsets.fromLTRB(14, 0, 14, 16),
+                  header: Row(
+                    children: [
+                      Container(
+                        width: 8,
+                        height: 8,
+                        margin: const EdgeInsets.only(right: 8),
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: _active ? Colors.greenAccent : Colors.white24,
+                          boxShadow: _active
+                              ? [
+                                  BoxShadow(
+                                    color: Colors.greenAccent.withAlpha(120),
+                                    blurRadius: 6,
+                                  )
+                                ]
+                              : null,
+                        ),
+                      ),
+                      Text(
+                        _active ? '运行中' : '已停止',
+                        style: TextStyle(
+                          color: _active ? Colors.greenAccent : Colors.white54,
+                          fontSize: 13,
+                        ),
+                      ),
+                      const Spacer(),
+                      Text(
+                        '灵敏度  ${_sensitivity.toStringAsFixed(0)}',
+                        style: const TextStyle(color: Colors.white38, fontSize: 11),
+                      ),
+                      const SizedBox(width: 4),
+                    ],
+                  ),
+                  body: Column(
+                    children: [
+                      const Divider(color: Colors.white10, height: 1),
+                      const SizedBox(height: 12),
+
+                      // 灵敏度滑块
+                      Row(
+                        children: [
+                          const Text('灵敏度', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                          Expanded(
+                            child: Slider(
+                              value: _sensitivity,
+                              min: 1,
+                              max: 20,
+                              divisions: 19,
+                              label: _sensitivity.toStringAsFixed(0),
+                              activeColor: const Color(0xFF2D6CDF),
+                              onChanged: (v) {
+                                setState(() => _sensitivity = v);
+                                _saveSensitivity();
+                              },
+                            ),
+                          ),
+                          SizedBox(
+                            width: 28,
+                            child: Text(
+                              _sensitivity.toStringAsFixed(0),
+                              textAlign: TextAlign.right,
+                              style: const TextStyle(color: Colors.white54, fontSize: 13),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+
+                      // 启动/停止按钮
+                      _StartStopButton(
+                        active: _active,
+                        onTap: _active ? _stopSensors : _startSensors,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        _active
+                            ? '竖持手机：左右转动→鼠标X，前后倾斜→鼠标Y'
+                            : '点击启动空中飞鼠（陀螺仪积分）',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.white38, fontSize: 12, height: 1.5),
+                      ),
+                    ],
                   ),
                 ),
-                Text(
-                  _active ? '运行中' : '已停止',
-                  style: TextStyle(
-                    color: _active ? Colors.greenAccent : Colors.white54,
-                    fontSize: 13,
-                  ),
-                ),
-                const Spacer(),
-                Text(
-                  '灵敏度  ${_sensitivity.toStringAsFixed(0)}',
-                  style: const TextStyle(color: Colors.white38, fontSize: 11),
-                ),
-                const SizedBox(width: 4),
-              ],
-            ),
-            body: Column(
-              children: [
-                const Divider(color: Colors.white10, height: 1),
-                const SizedBox(height: 12),
+                const SizedBox(height: 14),
 
-                // 灵敏度滑块
-                Row(
-                  children: [
-                    const Text('灵敏度', style: TextStyle(color: Colors.white70, fontSize: 13)),
-                    Expanded(
-                      child: Slider(
-                        value: _sensitivity,
-                        min: 1,
-                        max: 20,
-                        divisions: 19,
-                        label: _sensitivity.toStringAsFixed(0),
-                        activeColor: const Color(0xFF2D6CDF),
-                        onChanged: (v) {
-                          setState(() => _sensitivity = v);
-                          _saveSensitivity();
-                        },
-                      ),
-                    ),
-                    SizedBox(
-                      width: 28,
-                      child: Text(
-                        _sensitivity.toStringAsFixed(0),
-                        textAlign: TextAlign.right,
-                        style: const TextStyle(color: Colors.white54, fontSize: 13),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-
-                // 紧凑版启动/停止按钮
-                _StartStopButton(
+                // ── 状态卡片（诊断信息） ──
+                _StatusCard(
                   active: _active,
-                  onTap: _active ? _stopSensors : _startSensors,
+                  gyroZ: _dispGyroZ,
+                  gyroX: _dispGyroX,
+                  magDeg: _magReady ? _dispMagDeg : double.nan,
                 ),
-                const SizedBox(height: 8),
-                Text(
-                  _active
-                      ? '竖持手机：左右转动→鼠标X，前后倾斜→鼠标Y'
-                      : '点击启动空中飞鼠（陀螺仪 + 指南针互补滤波）',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.white38, fontSize: 12, height: 1.5),
+                const SizedBox(height: 10),
+
+                // ── 指南针可视化（激活后显示） ──
+                AnimatedCrossFade(
+                  duration: const Duration(milliseconds: 300),
+                  crossFadeState:
+                      _active ? CrossFadeState.showFirst : CrossFadeState.showSecond,
+                  firstChild: _CompassCard(magHeading: _magHeading),
+                  secondChild: const SizedBox.shrink(),
                 ),
+                if (_active) const SizedBox(height: 8),
               ],
             ),
           ),
-          const SizedBox(height: 14),
+        ),
 
-          // ── 状态卡片（诊断信息） ──
-          _StatusCard(
-            active: _active,
-            gyroZ: _dispGyroZ,
-            gyroX: _dispGyroX,
-            magDeg: _dispMagDeg,
-            fusedDeg: _dispFusedDeg,
-          ),
-          const SizedBox(height: 10),
+        // ── 底部鼠标按键（固定在屏幕底部，大尺寸，双键均支持长按） ──
+        _buildMouseButtons(),
+      ],
+    );
+  }
 
-          // ── 指南针可视化（激活后显示） ──
-          AnimatedCrossFade(
-            duration: const Duration(milliseconds: 300),
-            crossFadeState:
-                _active ? CrossFadeState.showFirst : CrossFadeState.showSecond,
-            firstChild: _CompassCard(
-              magHeading: _magHeading,
-              fusedYaw: _estimatedYaw,
+  Widget _buildMouseButtons() {
+    return Container(
+      color: const Color(0xFF16213E),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+      child: Row(
+        children: [
+          Expanded(
+            child: _MouseButton(
+              label: '左键',
+              icon: Icons.mouse,
+              onTap: () => widget.udpService.sendMouseClick(0),
+              onLongPressStart: () => widget.udpService.sendMouseDown(0),
+              onLongPressEnd: () => widget.udpService.sendMouseUp(0),
             ),
-            secondChild: const SizedBox.shrink(),
           ),
-          if (_active) const SizedBox(height: 8),
+          const SizedBox(width: 12),
+          Expanded(
+            child: _MouseButton(
+              label: '右键',
+              icon: Icons.mouse,
+              onTap: () => widget.udpService.sendMouseClick(1),
+              onLongPressStart: () => widget.udpService.sendMouseDown(1),
+              onLongPressEnd: () => widget.udpService.sendMouseUp(1),
+            ),
+          ),
         ],
       ),
     );
@@ -424,18 +401,17 @@ class _StatusCard extends StatelessWidget {
   final double gyroZ;
   final double gyroX;
   final double magDeg;
-  final double fusedDeg;
 
   const _StatusCard({
     required this.active,
     required this.gyroZ,
     required this.gyroX,
     required this.magDeg,
-    required this.fusedDeg,
   });
 
   @override
   Widget build(BuildContext context) {
+    final magStr = magDeg.isNaN ? '—' : '${magDeg.toStringAsFixed(0)}°';
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 8),
       decoration: BoxDecoration(
@@ -452,8 +428,7 @@ class _StatusCard extends StatelessWidget {
           ),
           _DataItem(label: 'Yaw(Z)', value: gyroZ.toStringAsFixed(2)),
           _DataItem(label: 'Pitch(X)', value: gyroX.toStringAsFixed(2)),
-          _DataItem(label: '罗盘°', value: magDeg.toStringAsFixed(0), valueColor: Colors.amber),
-          _DataItem(label: '融合°', value: fusedDeg.toStringAsFixed(0), valueColor: Colors.cyanAccent),
+          _DataItem(label: '罗盘°', value: magStr, valueColor: Colors.amber),
         ],
       ),
     );
@@ -461,13 +436,12 @@ class _StatusCard extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────
-// 指南针可视化卡片
+// 指南针可视化卡片（仅展示磁力计方向，不参与位移计算）
 // ─────────────────────────────────────────────────────────
 class _CompassCard extends StatelessWidget {
   final double magHeading;
-  final double fusedYaw;
 
-  const _CompassCard({required this.magHeading, required this.fusedYaw});
+  const _CompassCard({required this.magHeading});
 
   @override
   Widget build(BuildContext context) {
@@ -483,10 +457,7 @@ class _CompassCard extends StatelessWidget {
             width: 72,
             height: 72,
             child: CustomPaint(
-              painter: _CompassPainter(
-                magHeading: magHeading,
-                fusedYaw: fusedYaw,
-              ),
+              painter: _CompassPainter(magHeading: magHeading),
             ),
           ),
           const SizedBox(width: 16),
@@ -509,24 +480,8 @@ class _CompassCard extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Container(
-                        width: 10,
-                        height: 10,
-                        decoration: const BoxDecoration(
-                            color: Colors.cyanAccent, shape: BoxShape.circle)),
-                    const SizedBox(width: 6),
-                    Text(
-                      '融合估算 ${(fusedYaw * 180 / math.pi).toStringAsFixed(1)}°',
-                      style:
-                          const TextStyle(color: Colors.cyanAccent, fontSize: 13),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
                 const Text(
-                  '互补滤波：α=0.95\n陀螺仪主导，罗盘修正漂移',
+                  '鼠标位移由陀螺仪积分控制\n罗盘仅供参考，不影响移动',
                   style: TextStyle(
                       color: Colors.white30, fontSize: 11, height: 1.5),
                 ),
@@ -541,9 +496,8 @@ class _CompassCard extends StatelessWidget {
 
 class _CompassPainter extends CustomPainter {
   final double magHeading;
-  final double fusedYaw;
 
-  const _CompassPainter({required this.magHeading, required this.fusedYaw});
+  const _CompassPainter({required this.magHeading});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -569,7 +523,6 @@ class _CompassPainter extends CustomPainter {
     }
 
     _drawNeedle(canvas, center, r - 6, magHeading, Colors.amber, 2.5);
-    _drawNeedle(canvas, center, r - 12, fusedYaw, Colors.cyanAccent, 1.8);
     canvas.drawCircle(center, 3, Paint()..color = Colors.white54);
   }
 
@@ -593,8 +546,7 @@ class _CompassPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_CompassPainter old) =>
-      old.magHeading != magHeading || old.fusedYaw != fusedYaw;
+  bool shouldRepaint(_CompassPainter old) => old.magHeading != magHeading;
 }
 
 class _DataItem extends StatelessWidget {
@@ -623,7 +575,7 @@ class _DataItem extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────
-// 鼠标按键（带触觉+视觉反馈，支持长按拖拽）
+// 鼠标按键（带触觉+视觉反馈，支持长按持续按下）
 // ─────────────────────────────────────────────────────────
 class _MouseButton extends StatefulWidget {
   final String label;

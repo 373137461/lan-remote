@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import '../services/udp_service.dart';
 import 'touchpad_screen.dart';
 import 'gyro_screen.dart';
@@ -31,6 +32,7 @@ class _ControlScreenState extends State<ControlScreen> {
   @override
   void initState() {
     super.initState();
+    WakelockPlus.enable(); // 进入控制页面后禁止屏幕休眠
     _pages = [
       TouchpadScreen(udpService: widget.udpService),
       GyroScreen(udpService: widget.udpService),
@@ -50,6 +52,7 @@ class _ControlScreenState extends State<ControlScreen> {
 
   @override
   void dispose() {
+    WakelockPlus.disable(); // 离开控制页面后恢复屏幕休眠
     _disconnectSub?.cancel();
     _latencySub?.cancel();
     super.dispose();

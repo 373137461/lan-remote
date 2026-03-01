@@ -340,15 +340,11 @@ class _KeyboardScreenState extends State<KeyboardScreen>
               final idx = sc['idx'] as int;
               final name = sc['name'] as String;
               final desc = (sc['desc'] as String?) ?? '';
-              final chip = _SysChip(
-                label: name,
-                icon: Icons.bolt_outlined,
+              return _CustomShortcutChip(
+                name: name,
+                desc: desc,
                 onTap: () => widget.udpService.sendSysAction(0x20 + idx),
               );
-              if (desc.isNotEmpty) {
-                return Tooltip(message: desc, child: chip);
-              }
-              return chip as Widget;
             }).toList(),
           ),
         ],
@@ -773,6 +769,79 @@ class _EditChipState extends State<_EditChip> {
               widget.sublabel,
               style: const TextStyle(color: Colors.white30, fontSize: 9),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 自定义快捷键按钮：备注文字（desc）始终显示在图标下方
+class _CustomShortcutChip extends StatefulWidget {
+  final String name;
+  final String desc;
+  final VoidCallback onTap;
+
+  const _CustomShortcutChip({
+    required this.name,
+    required this.desc,
+    required this.onTap,
+  });
+
+  @override
+  State<_CustomShortcutChip> createState() => _CustomShortcutChipState();
+}
+
+class _CustomShortcutChipState extends State<_CustomShortcutChip> {
+  bool _pressed = false;
+
+  @override
+  Widget build(BuildContext context) {
+    const color = Color(0xFF2D6CDF);
+    return GestureDetector(
+      onTapDown: (_) {
+        setState(() => _pressed = true);
+        HapticFeedback.lightImpact();
+      },
+      onTapUp: (_) {
+        setState(() => _pressed = false);
+        widget.onTap();
+      },
+      onTapCancel: () => setState(() => _pressed = false),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 80),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: _pressed ? color.withAlpha(70) : color.withAlpha(30),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: _pressed ? color.withAlpha(200) : color.withAlpha(80),
+          ),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.bolt_outlined, size: 14, color: color),
+                const SizedBox(width: 4),
+                Text(
+                  widget.name,
+                  style: TextStyle(
+                    color: _pressed ? Colors.white : Colors.white70,
+                    fontSize: 13,
+                  ),
+                ),
+              ],
+            ),
+            if (widget.desc.isNotEmpty) ...[
+              const SizedBox(height: 3),
+              Text(
+                widget.desc,
+                style: const TextStyle(color: Colors.white38, fontSize: 10),
+              ),
+            ],
           ],
         ),
       ),

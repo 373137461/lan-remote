@@ -490,6 +490,10 @@ class _OsLogo extends StatelessWidget {
           'assets/windows.svg',
           width: 36,
           height: 36,
+          colorFilter: const ColorFilter.mode(
+            Color(0xff01A6F0),
+            BlendMode.srcIn,
+          ),
         );
       case 1: // macOS：白色苹果轮廓
         return SvgPicture.asset(

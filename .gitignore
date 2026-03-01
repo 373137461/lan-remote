@@ -3,3 +3,6 @@ TODO.md
 .claude/
 .claude
 *.log
+server/server.log
+server/lan-remote-server
+server/lan-remote-server.exe
