@@ -53,6 +53,10 @@ class UdpService {
   final _latencyController = StreamController<int>.broadcast();
   Stream<int> get latencyStream => _latencyController.stream;
 
+  // ── 心跳状态 ──
+  final _pingSentController = StreamController<void>.broadcast();
+  Stream<void> get pingSentStream => _pingSentController.stream;
+
   // ── 断开通知流 ──
   final _disconnectController = StreamController<void>.broadcast();
   Stream<void> get disconnectStream => _disconnectController.stream;
@@ -100,6 +104,8 @@ class UdpService {
   void _startHeartbeat() {
     _lastPongMs = DateTime.now().millisecondsSinceEpoch;
     _pingTimer?.cancel();
+    // 连接后立即发一次 ping，让 ⬆️ 指示灯即刻生效
+    Timer(const Duration(milliseconds: 200), _sendPing);
     _pingTimer = Timer.periodic(
       const Duration(milliseconds: _pingIntervalMs),
       (_) => _sendPing(),
@@ -133,6 +139,7 @@ class UdpService {
       packet.setUint8(0, 0x10);
       packet.setUint64(1, _pingSentTime, Endian.big);
       _socket!.send(packet.buffer.asUint8List(), _targetIp!, _targetPort);
+      _pingSentController.add(null); // 通知 UI ping 已发出
     } catch (_) {}
   }
 
@@ -175,6 +182,11 @@ class UdpService {
               return;
             }
             _parseDeviceInfo(data);
+            // 握手 RTT 作为初始延迟估算（立即显示，无需等待第一个 pong）
+            if (rtt >= 0 && rtt < 5000) {
+              latencyMs = rtt;
+              _latencyController.add(rtt);
+            }
             completer.complete(true);
           } else if (data.length >= 9) {
             // 兼容旧服务端（无 OS/auth 字节）
@@ -183,6 +195,10 @@ class UdpService {
             final nowTime = DateTime.now().millisecondsSinceEpoch;
             final rtt = nowTime - sendTime;
             timeOffset = (pcTime.toInt() + rtt ~/ 2) - nowTime;
+            if (rtt >= 0 && rtt < 5000) {
+              latencyMs = rtt;
+              _latencyController.add(rtt);
+            }
             completer.complete(true);
           }
         }

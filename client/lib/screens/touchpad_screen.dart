@@ -1,17 +1,23 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:sensors_plus/sensors_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/udp_service.dart';
 import '../widgets/collapse_card.dart';
 
-/// 触摸板模式
-/// - 单指滑动：鼠标移动
+/// 触摸板模式 + 空中飞鼠集成
+///
+/// 触摸板手势：
+/// - 单指滑动：鼠标移动（带发光指示点特效）
 /// - 单指轻敲：左键单击
-/// - 单指双敲（快速两次）：左键双击
-/// - 单指长按后滑动：拖拽（鼠标按下并移动）
+/// - 单指双敲（< 300ms）：左键双击
+/// - 单指长按后滑动：拖拽（橙色发光 + 背景变色）
 /// - 双指轻敲：右键单击
 /// - 右侧弹簧滑块：鼠标滚轮
+///
+/// 空中飞鼠（整合在设置折叠卡中）：
+/// - 纯陀螺仪积分，无回弹，Z 轴→横向，X 轴→纵向
 class TouchpadScreen extends StatefulWidget {
   final UdpService udpService;
   const TouchpadScreen({super.key, required this.udpService});
@@ -21,13 +27,16 @@ class TouchpadScreen extends StatefulWidget {
 }
 
 class _TouchpadScreenState extends State<TouchpadScreen> {
-  // ── 灵敏度设置 ──
-  double _touchSensitivity = 1.5;  // 触控移动速度
-  double _scrollSensitivity = 1.0; // 滚轮速度倍率
+
+  // ── 灵敏度 ──
+  double _touchSensitivity = 1.5;
+  double _scrollSensitivity = 1.0;
+  double _gyroSensitivity = 8.0;
   bool _settingsExpanded = false;
 
   static const _keyTouch = 'tp_touch_sens';
   static const _keyScroll = 'tp_scroll_sens';
+  static const _keyGyroSens = 'gyro_sensitivity';
 
   // ── 手势状态 ──
   Offset? _lastFocalPoint;
@@ -36,46 +45,140 @@ class _TouchpadScreenState extends State<TouchpadScreen> {
   bool _isTwoFingerTap = false;
   Offset _tapDownPosition = Offset.zero;
   static const double _tapMoveThreshold = 10.0;
-
-  // 双击检测
   int? _lastTapMs;
   static const int _doubleClickMs = 300;
-
-  // 拖拽状态
   bool _isDragging = false;
   Timer? _dragTimer;
   static const int _dragDelayMs = 300;
 
+  // ── 视觉特效 ──
+  Offset? _fingerPos;      // 手指在触摸板局部坐标
+  bool _isTouching = false;
+
+  // ── 空中飞鼠 ──
+  bool _gyroActive = false;
+  StreamSubscription<GyroscopeEvent>? _gyroSub;
+  Timer? _gyroThrottleTimer;
+  double _accDx = 0, _accDy = 0;
+  int _lastGyroUs = 0;
+  double _dispGyroZ = 0, _dispGyroX = 0;
+  static const double _radToPixel = 100.0;
+  static const int _throttleMs = 16;
+
   @override
   void initState() {
     super.initState();
-    _loadSensitivity();
+    _loadPrefs();
+
   }
 
-  Future<void> _loadSensitivity() async {
+  Future<void> _loadPrefs() async {
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
     setState(() {
       _touchSensitivity = prefs.getDouble(_keyTouch) ?? 1.5;
       _scrollSensitivity = prefs.getDouble(_keyScroll) ?? 1.0;
+      _gyroSensitivity = prefs.getDouble(_keyGyroSens) ?? 8.0;
     });
   }
 
-  Future<void> _saveSensitivity() async {
+  Future<void> _savePrefs() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble(_keyTouch, _touchSensitivity);
     await prefs.setDouble(_keyScroll, _scrollSensitivity);
+    await prefs.setDouble(_keyGyroSens, _gyroSensitivity);
   }
 
   @override
   void dispose() {
     _dragTimer?.cancel();
+    _gyroSub?.cancel();
+    _gyroThrottleTimer?.cancel();
     super.dispose();
   }
 
-  void _onPointerDown(PointerDownEvent e) => _pointerCount++;
-  void _onPointerUp(PointerUpEvent e) =>
-      _pointerCount = (_pointerCount - 1).clamp(0, 10);
+  // ────────────────────────────────────────────────────────
+  // 空中飞鼠控制
+  // ────────────────────────────────────────────────────────
+
+  void _startGyro() {
+    HapticFeedback.mediumImpact();
+    _lastGyroUs = 0;
+    _accDx = 0;
+    _accDy = 0;
+
+    _gyroSub = gyroscopeEventStream(
+      samplingPeriod: SensorInterval.gameInterval,
+    ).listen(_onGyroEvent, onError: (_) {
+      if (mounted) setState(() => _gyroActive = false);
+    });
+
+    _gyroThrottleTimer = Timer.periodic(
+      Duration(milliseconds: _throttleMs),
+      (_) {
+        final dx = _accDx.round();
+        final dy = _accDy.round();
+        if (dx != 0 || dy != 0) {
+          widget.udpService.sendMouseMove(dx, dy);
+          _accDx = 0;
+          _accDy = 0;
+        }
+      },
+    );
+    setState(() => _gyroActive = true);
+  }
+
+  void _stopGyro() {
+    _gyroSub?.cancel();
+    _gyroSub = null;
+    _gyroThrottleTimer?.cancel();
+    _gyroThrottleTimer = null;
+    _accDx = 0;
+    _accDy = 0;
+    if (mounted) {
+      HapticFeedback.lightImpact();
+      setState(() => _gyroActive = false);
+    }
+  }
+
+  void _onGyroEvent(GyroscopeEvent event) {
+    final nowUs = DateTime.now().microsecondsSinceEpoch;
+    if (_lastGyroUs == 0) {
+      _lastGyroUs = nowUs;
+      return;
+    }
+    final dt = (nowUs - _lastGyroUs) / 1e6;
+    _lastGyroUs = nowUs;
+    _accDx -= event.z * dt * _gyroSensitivity * _radToPixel;
+    _accDy -= event.x * dt * _gyroSensitivity * _radToPixel;
+    if (mounted) setState(() { _dispGyroZ = event.z; _dispGyroX = event.x; });
+  }
+
+  // ────────────────────────────────────────────────────────
+  // 指针 / 手势回调
+  // ────────────────────────────────────────────────────────
+
+  void _onPointerDown(PointerDownEvent e) {
+    _pointerCount++;
+    setState(() {
+      _isTouching = true;
+      _fingerPos = e.localPosition;
+    });
+  }
+
+  void _onPointerMove(PointerMoveEvent e) {
+    setState(() => _fingerPos = e.localPosition);
+  }
+
+  void _onPointerUp(PointerUpEvent e) {
+    _pointerCount = (_pointerCount - 1).clamp(0, 10);
+    if (_pointerCount == 0) {
+      setState(() {
+        _isTouching = false;
+        _fingerPos = null;
+      });
+    }
+  }
 
   void _onScaleStart(ScaleStartDetails d) {
     _lastFocalPoint = d.focalPoint;
@@ -90,6 +193,8 @@ class _TouchpadScreenState extends State<TouchpadScreen> {
           _isDragging = true;
           _isTap = false;
           widget.udpService.sendMouseDown(0);
+          HapticFeedback.mediumImpact();
+          setState(() {});
         }
       });
     }
@@ -97,7 +202,6 @@ class _TouchpadScreenState extends State<TouchpadScreen> {
 
   void _onScaleUpdate(ScaleUpdateDetails d) {
     if (_lastFocalPoint == null) return;
-
     final delta = d.focalPoint - _lastFocalPoint!;
     final totalMove = (d.focalPoint - _tapDownPosition).distance;
 
@@ -110,11 +214,8 @@ class _TouchpadScreenState extends State<TouchpadScreen> {
     if (_pointerCount < 2) {
       final dx = (delta.dx * _touchSensitivity).round();
       final dy = (delta.dy * _touchSensitivity).round();
-      if (dx != 0 || dy != 0) {
-        widget.udpService.sendMouseMove(dx, dy);
-      }
+      if (dx != 0 || dy != 0) widget.udpService.sendMouseMove(dx, dy);
     }
-
     _lastFocalPoint = d.focalPoint;
   }
 
@@ -124,7 +225,7 @@ class _TouchpadScreenState extends State<TouchpadScreen> {
 
     if (_isDragging) {
       widget.udpService.sendMouseUp(0);
-      _isDragging = false;
+      setState(() => _isDragging = false);
     } else if (_isTap) {
       final now = DateTime.now().millisecondsSinceEpoch;
       if (_isTwoFingerTap) {
@@ -146,57 +247,20 @@ class _TouchpadScreenState extends State<TouchpadScreen> {
     _isTwoFingerTap = false;
   }
 
+  // ────────────────────────────────────────────────────────
+  // 构建
+  // ────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
         _buildSettings(),
-        _buildButtonBar(),
         Expanded(
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Expanded(
-                child: Listener(
-                  onPointerDown: _onPointerDown,
-                  onPointerUp: _onPointerUp,
-                  child: GestureDetector(
-                    onScaleStart: _onScaleStart,
-                    onScaleUpdate: _onScaleUpdate,
-                    onScaleEnd: _onScaleEnd,
-                    child: Container(
-                      color: _isDragging
-                          ? const Color(0xFF0A2850)
-                          : const Color(0xFF0F3460),
-                      child: Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(
-                              _isDragging ? Icons.open_with : Icons.touch_app,
-                              size: 44,
-                              color: Colors.white.withAlpha(_isDragging ? 100 : 50),
-                            ),
-                            const SizedBox(height: 12),
-                            Text(
-                              _isDragging
-                                  ? '拖拽中…松手结束'
-                                  : '单指滑动 移动鼠标\n单击 左键 · 双击 左键双击\n长按后滑动 拖拽\n双指轻敲 右键',
-                              textAlign: TextAlign.center,
-                              style: TextStyle(
-                                color: Colors.white
-                                    .withAlpha(_isDragging ? 120 : 70),
-                                fontSize: 13,
-                                height: 1.8,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
+              Expanded(child: _buildTouchpadArea()),
               SizedBox(
                 width: 54,
                 child: _SpringScrollSlider(
@@ -207,12 +271,17 @@ class _TouchpadScreenState extends State<TouchpadScreen> {
             ],
           ),
         ),
-        _buildClickButtons(),
+        _buildBottomButtons(),
       ],
     );
   }
 
+  // ── 设置区（触摸板 + 飞鼠合并为一张折叠卡） ──
   Widget _buildSettings() {
+    final gyroSummary = _gyroActive
+        ? '飞鼠运行中'
+        : '飞鼠 ${_gyroSensitivity.toStringAsFixed(0)}';
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(8, 6, 8, 0),
       child: CollapseCard(
@@ -222,11 +291,27 @@ class _TouchpadScreenState extends State<TouchpadScreen> {
           children: [
             const Icon(Icons.tune, color: Color(0xFF2D6CDF), size: 14),
             const SizedBox(width: 6),
-            const Text('触摸板设置', style: TextStyle(color: Colors.white70, fontSize: 13)),
+            const Text('设置',
+                style: TextStyle(color: Colors.white70, fontSize: 13)),
             const Spacer(),
+            if (_gyroActive)
+              Container(
+                width: 6, height: 6,
+                margin: const EdgeInsets.only(right: 4),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.greenAccent,
+                  boxShadow: [BoxShadow(
+                      color: Colors.greenAccent.withAlpha(120), blurRadius: 4)],
+                ),
+              ),
             Text(
-              '触控 ${_touchSensitivity.toStringAsFixed(1)}  ·  滚轮 ${_scrollSensitivity.toStringAsFixed(1)}',
-              style: const TextStyle(color: Colors.white38, fontSize: 11),
+              '触控 ${_touchSensitivity.toStringAsFixed(1)}  ·  '
+              '滚轮 ${_scrollSensitivity.toStringAsFixed(1)}  ·  $gyroSummary',
+              style: TextStyle(
+                color: _gyroActive ? Colors.greenAccent : Colors.white38,
+                fontSize: 11,
+              ),
             ),
           ],
         ),
@@ -234,16 +319,15 @@ class _TouchpadScreenState extends State<TouchpadScreen> {
           children: [
             const Divider(color: Colors.white10, height: 1),
             const SizedBox(height: 10),
+            // 触摸板灵敏度
             _SensitivityRow(
               label: '触控灵敏度',
               icon: Icons.touch_app,
               value: _touchSensitivity,
-              min: 0.5,
-              max: 5.0,
-              divisions: 18,
+              min: 0.5, max: 5.0, divisions: 18,
               onChanged: (v) {
                 setState(() => _touchSensitivity = v);
-                _saveSensitivity();
+                _savePrefs();
               },
             ),
             const SizedBox(height: 4),
@@ -251,54 +335,148 @@ class _TouchpadScreenState extends State<TouchpadScreen> {
               label: '滚轮灵敏度',
               icon: Icons.mouse,
               value: _scrollSensitivity,
-              min: 0.3,
-              max: 4.0,
-              divisions: 19,
+              min: 0.3, max: 4.0, divisions: 19,
               onChanged: (v) {
                 setState(() => _scrollSensitivity = v);
-                _saveSensitivity();
+                _savePrefs();
               },
             ),
+            const Divider(color: Colors.white10, height: 20),
+            // 空中飞鼠
+            _SensitivityRow(
+              label: '飞鼠灵敏度',
+              icon: Icons.screen_rotation_outlined,
+              value: _gyroSensitivity,
+              min: 1, max: 20, divisions: 19,
+              onChanged: (v) {
+                setState(() => _gyroSensitivity = v);
+                _savePrefs();
+              },
+            ),
+            const SizedBox(height: 10),
+            _StartStopButton(
+              active: _gyroActive,
+              onTap: _gyroActive ? _stopGyro : _startGyro,
+            ),
+            const SizedBox(height: 8),
+            if (_gyroActive) ...[
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  _GyroChip(label: 'Z偏航', value: _dispGyroZ),
+                  const SizedBox(width: 16),
+                  _GyroChip(label: 'X俯仰', value: _dispGyroX),
+                ],
+              ),
+              const SizedBox(height: 4),
+            ],
+            Text(
+              _gyroActive
+                  ? '竖持手机：左右转→鼠标X，前后倾→鼠标Y'
+                  : '启动后转动手机控制鼠标（纯陀螺仪，无回弹）',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                  color: Colors.white38, fontSize: 12, height: 1.4),
+            ),
+            const SizedBox(height: 4),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildButtonBar() {
-    return Container(
-      color: const Color(0xFF16213E),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: [
-          _ActionChip(label: '左键', onTap: () => widget.udpService.sendMouseClick(0)),
-          _ActionChip(label: '右键', onTap: () => widget.udpService.sendMouseClick(1)),
-          _ActionChip(label: '中键', onTap: () => widget.udpService.sendMouseClick(2)),
-          _ActionChip(label: '双击', onTap: () => widget.udpService.sendMouseDoubleClick(0)),
-        ],
+  // ── 触摸板主区域（含视觉特效） ──
+  Widget _buildTouchpadArea() {
+    final bgColor = _isDragging
+        ? const Color(0xFF07192E)
+        : _isTouching
+            ? const Color(0xFF0D2A50)
+            : const Color(0xFF0F3460);
+
+    return Listener(
+      onPointerDown: _onPointerDown,
+      onPointerMove: _onPointerMove,
+      onPointerUp: _onPointerUp,
+      child: GestureDetector(
+        onScaleStart: _onScaleStart,
+        onScaleUpdate: _onScaleUpdate,
+        onScaleEnd: _onScaleEnd,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          color: bgColor,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              // 视觉特效层
+              if (_isTouching)
+                CustomPaint(
+                  painter: _TouchEffectPainter(
+                    fingerPos: _fingerPos,
+                    isTouching: _isTouching,
+                    isDragging: _isDragging,
+                  ),
+                ),
+
+              // 提示文字（触摸时淡出）
+              AnimatedOpacity(
+                opacity: _isTouching ? 0.0 : 1.0,
+                duration: const Duration(milliseconds: 200),
+                child: Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        _isDragging ? Icons.open_with : Icons.touch_app,
+                        size: 44,
+                        color: Colors.white.withAlpha(50),
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        _isDragging
+                            ? '拖拽中…松手结束'
+                            : '单指滑动 移动鼠标\n单击 左键 · 双击 左键双击\n长按后滑动 拖拽\n双指轻敲 右键',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Colors.white.withAlpha(70),
+                          fontSize: 13,
+                          height: 1.8,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
 
-  Widget _buildClickButtons() {
+  // ── 底部鼠标按键（左右键均支持长按，与飞鼠样式一致） ──
+  Widget _buildBottomButtons() {
     return Container(
       color: const Color(0xFF16213E),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
       child: Row(
         children: [
           Expanded(
-            child: _LargeButton(
+            child: _MouseButton(
               label: '左键',
+              icon: Icons.mouse,
               onTap: () => widget.udpService.sendMouseClick(0),
               onLongPressStart: () => widget.udpService.sendMouseDown(0),
               onLongPressEnd: () => widget.udpService.sendMouseUp(0),
             ),
           ),
-          Container(width: 1, height: 56, color: Colors.white12),
+          const SizedBox(width: 12),
           Expanded(
-            child: _LargeButton(
+            child: _MouseButton(
               label: '右键',
+              icon: Icons.mouse,
               onTap: () => widget.udpService.sendMouseClick(1),
+              onLongPressStart: () => widget.udpService.sendMouseDown(1),
+              onLongPressEnd: () => widget.udpService.sendMouseUp(1),
             ),
           ),
         ],
@@ -307,7 +485,59 @@ class _TouchpadScreenState extends State<TouchpadScreen> {
   }
 }
 
-// ─── 灵敏度滑块行 ────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────
+// 触摸视觉特效 Painter
+// ─────────────────────────────────────────────────────────
+class _TouchEffectPainter extends CustomPainter {
+  final Offset? fingerPos;
+  final bool isTouching;
+  final bool isDragging;
+
+  const _TouchEffectPainter({
+    required this.fingerPos,
+    required this.isTouching,
+    required this.isDragging,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    // 手指发光点
+    if (fingerPos != null && isTouching) {
+      final color = isDragging ? Colors.orangeAccent : const Color(0xFF4D9FFF);
+      final outerR = isDragging ? 38.0 : 26.0;
+      final midR   = isDragging ? 20.0 : 13.0;
+      final innerR = isDragging ? 7.0  : 5.0;
+
+      // 外晕
+      canvas.drawCircle(fingerPos!, outerR,
+          Paint()..color = color.withAlpha(18));
+      // 中晕
+      canvas.drawCircle(fingerPos!, midR,
+          Paint()..color = color.withAlpha(55));
+      // 核心点
+      canvas.drawCircle(fingerPos!, innerR,
+          Paint()..color = color.withAlpha(200));
+      // 外环描边
+      canvas.drawCircle(
+        fingerPos!, outerR,
+        Paint()
+          ..color = color.withAlpha(70)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_TouchEffectPainter old) =>
+      old.fingerPos != fingerPos ||
+      old.isTouching != isTouching ||
+      old.isDragging != isDragging;
+}
+
+// ─────────────────────────────────────────────────────────
+// 灵敏度滑块行
+// ─────────────────────────────────────────────────────────
 class _SensitivityRow extends StatelessWidget {
   final String label;
   final IconData icon;
@@ -335,14 +565,13 @@ class _SensitivityRow extends StatelessWidget {
         const SizedBox(width: 6),
         SizedBox(
           width: 72,
-          child: Text(label, style: const TextStyle(color: Colors.white54, fontSize: 12)),
+          child: Text(label,
+              style: const TextStyle(color: Colors.white54, fontSize: 12)),
         ),
         Expanded(
           child: Slider(
             value: value,
-            min: min,
-            max: max,
-            divisions: divisions,
+            min: min, max: max, divisions: divisions,
             activeColor: const Color(0xFF2D6CDF),
             inactiveColor: Colors.white12,
             onChanged: onChanged,
@@ -361,7 +590,95 @@ class _SensitivityRow extends StatelessWidget {
   }
 }
 
-// ─── 弹簧回弹滚轮滑块 ───────────────────────────────────────
+// ─────────────────────────────────────────────────────────
+// 飞鼠数据小芯片
+// ─────────────────────────────────────────────────────────
+class _GyroChip extends StatelessWidget {
+  final String label;
+  final double value;
+  const _GyroChip({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Text(label,
+            style: const TextStyle(color: Colors.white38, fontSize: 10)),
+        const SizedBox(height: 2),
+        Text(
+          value.toStringAsFixed(2),
+          style: const TextStyle(
+              color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold),
+        ),
+      ],
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────
+// 飞鼠启动/停止按钮
+// ─────────────────────────────────────────────────────────
+class _StartStopButton extends StatefulWidget {
+  final bool active;
+  final VoidCallback onTap;
+  const _StartStopButton({required this.active, required this.onTap});
+
+  @override
+  State<_StartStopButton> createState() => _StartStopButtonState();
+}
+
+class _StartStopButtonState extends State<_StartStopButton> {
+  bool _pressed = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = widget.active ? Colors.redAccent : const Color(0xFF2D6CDF);
+    return GestureDetector(
+      onTapDown: (_) => setState(() => _pressed = true),
+      onTapUp: (_) {
+        setState(() => _pressed = false);
+        widget.onTap();
+      },
+      onTapCancel: () => setState(() => _pressed = false),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 120),
+        height: 48,
+        decoration: BoxDecoration(
+          color: _pressed ? color.withAlpha(200) : color,
+          borderRadius: BorderRadius.circular(12),
+          boxShadow: [
+            BoxShadow(
+              color: color.withAlpha(_pressed ? 60 : 90),
+              blurRadius: _pressed ? 6 : 12,
+              spreadRadius: _pressed ? 0 : 2,
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              widget.active ? Icons.stop_rounded : Icons.play_arrow_rounded,
+              color: Colors.white, size: 22,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              widget.active ? '停止飞鼠' : '启动飞鼠',
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────
+// 弹簧回弹滚轮滑块
+// ─────────────────────────────────────────────────────────
 class _SpringScrollSlider extends StatefulWidget {
   final ValueChanged<int> onScroll;
   final double scrollSensitivity;
@@ -379,8 +696,7 @@ class _SpringScrollSliderState extends State<_SpringScrollSlider>
   double _offset = 0.0;
   double _halfTrack = 120.0;
 
-  /// 滚动累积器：每累积 _basePx 像素触发 1 次 scroll
-  /// 灵敏度越高 → 分母越小 → 同样滑动触发次数越多
+  /// 累积器：每累积 _basePx 像素触发 1 次 scroll
   static const double _basePx = 30.0;
   double _scrollAcc = 0.0;
 
@@ -408,7 +724,6 @@ class _SpringScrollSliderState extends State<_SpringScrollSlider>
     setState(() {
       _offset = (_offset + d.delta.dy).clamp(-_halfTrack, _halfTrack);
     });
-    // 累积滑动距离，每 (_basePx / sensitivity) 像素触发 1 次 scroll
     _scrollAcc += -d.delta.dy * widget.scrollSensitivity;
     while (_scrollAcc >= _basePx) {
       widget.onScroll(1);
@@ -421,7 +736,7 @@ class _SpringScrollSliderState extends State<_SpringScrollSlider>
   }
 
   void _onDragEnd(DragEndDetails _) {
-    _scrollAcc = 0.0; // 松手时重置累积器，避免下次拖动时跨越阈值误触发
+    _scrollAcc = 0.0;
     final start = _offset;
     _springAnim = Tween<double>(begin: start, end: 0).animate(
       CurvedAnimation(parent: _springCtrl, curve: Curves.elasticOut),
@@ -447,13 +762,15 @@ class _SpringScrollSliderState extends State<_SpringScrollSlider>
           child: Container(
             decoration: const BoxDecoration(
               color: Color(0xFF0A2040),
-              border: Border(left: BorderSide(color: Colors.white10, width: 1)),
+              border:
+                  Border(left: BorderSide(color: Colors.white10, width: 1)),
             ),
             child: Stack(
               children: [
                 const Positioned(
                   top: 10, left: 0, right: 0,
-                  child: Icon(Icons.keyboard_arrow_up, color: Colors.white24, size: 18),
+                  child: Icon(Icons.keyboard_arrow_up,
+                      color: Colors.white24, size: 18),
                 ),
                 const Positioned(
                   top: 26, left: 0, right: 0,
@@ -477,7 +794,9 @@ class _SpringScrollSliderState extends State<_SpringScrollSlider>
                     height: 44,
                     decoration: BoxDecoration(
                       color: Color.lerp(
-                          const Color(0xFF2D6CDF), const Color(0xFF00CFFF), intensity),
+                          const Color(0xFF2D6CDF),
+                          const Color(0xFF00CFFF),
+                          intensity),
                       borderRadius: BorderRadius.circular(10),
                       boxShadow: [
                         if (intensity > 0.05)
@@ -489,12 +808,14 @@ class _SpringScrollSliderState extends State<_SpringScrollSlider>
                           ),
                       ],
                     ),
-                    child: const Icon(Icons.drag_handle, color: Colors.white70, size: 16),
+                    child: const Icon(Icons.drag_handle,
+                        color: Colors.white70, size: 16),
                   ),
                 ),
                 const Positioned(
                   bottom: 10, left: 0, right: 0,
-                  child: Icon(Icons.keyboard_arrow_down, color: Colors.white24, size: 18),
+                  child: Icon(Icons.keyboard_arrow_down,
+                      color: Colors.white24, size: 18),
                 ),
               ],
             ),
@@ -505,75 +826,29 @@ class _SpringScrollSliderState extends State<_SpringScrollSlider>
   }
 }
 
-// ─── 顶栏快捷按钮（带触觉+视觉反馈）────────────────────────
-class _ActionChip extends StatefulWidget {
+// ─────────────────────────────────────────────────────────
+// 底部鼠标按键（带触觉+视觉反馈，支持长按持续按下）
+// ─────────────────────────────────────────────────────────
+class _MouseButton extends StatefulWidget {
   final String label;
-  final VoidCallback onTap;
-  const _ActionChip({required this.label, required this.onTap});
-
-  @override
-  State<_ActionChip> createState() => _ActionChipState();
-}
-
-class _ActionChipState extends State<_ActionChip> {
-  bool _pressed = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTapDown: (_) {
-        setState(() => _pressed = true);
-        HapticFeedback.lightImpact();
-      },
-      onTapUp: (_) {
-        setState(() => _pressed = false);
-        widget.onTap();
-      },
-      onTapCancel: () => setState(() => _pressed = false),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 80),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-        decoration: BoxDecoration(
-          color: _pressed
-              ? const Color(0xFF2D6CDF).withAlpha(110)
-              : const Color(0xFF2D6CDF).withAlpha(40),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(
-            color: _pressed
-                ? const Color(0xFF2D6CDF).withAlpha(200)
-                : const Color(0xFF2D6CDF).withAlpha(80),
-          ),
-        ),
-        child: Text(
-          widget.label,
-          style: TextStyle(
-            color: _pressed ? Colors.white : Colors.white70,
-            fontSize: 13,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ─── 底栏大按钮（带触觉+视觉反馈，支持长按拖拽）────────────
-class _LargeButton extends StatefulWidget {
-  final String label;
+  final IconData icon;
   final VoidCallback onTap;
   final VoidCallback? onLongPressStart;
   final VoidCallback? onLongPressEnd;
-  const _LargeButton({
+
+  const _MouseButton({
     required this.label,
+    required this.icon,
     required this.onTap,
     this.onLongPressStart,
     this.onLongPressEnd,
   });
 
   @override
-  State<_LargeButton> createState() => _LargeButtonState();
+  State<_MouseButton> createState() => _MouseButtonState();
 }
 
-class _LargeButtonState extends State<_LargeButton> {
+class _MouseButtonState extends State<_MouseButton> {
   bool _pressed = false;
 
   @override
@@ -602,19 +877,44 @@ class _LargeButtonState extends State<_LargeButton> {
             }
           : null,
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 80),
-        height: 56,
-        alignment: Alignment.center,
+        duration: const Duration(milliseconds: 90),
+        height: 72,
         decoration: BoxDecoration(
-          color: _pressed ? const Color(0xFF2D6CDF).withAlpha(40) : Colors.transparent,
-        ),
-        child: Text(
-          widget.label,
-          style: TextStyle(
-            color: _pressed ? Colors.white : Colors.white70,
-            fontSize: 16,
-            fontWeight: _pressed ? FontWeight.w600 : FontWeight.normal,
+          color: _pressed
+              ? const Color(0xFF1E3A6E)
+              : const Color(0xFF16213E),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: _pressed
+                ? const Color(0xFF2D6CDF)
+                : const Color(0xFF2D6CDF).withAlpha(100),
+            width: _pressed ? 1.5 : 1.0,
           ),
+          boxShadow: _pressed
+              ? [
+                  BoxShadow(
+                    color: const Color(0xFF2D6CDF).withAlpha(60),
+                    blurRadius: 10,
+                    spreadRadius: 1,
+                  )
+                ]
+              : null,
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(widget.icon, size: 22,
+                color: _pressed ? Colors.white : Colors.white54),
+            const SizedBox(width: 8),
+            Text(
+              widget.label,
+              style: TextStyle(
+                color: _pressed ? Colors.white : Colors.white70,
+                fontSize: 20,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
         ),
       ),
     );

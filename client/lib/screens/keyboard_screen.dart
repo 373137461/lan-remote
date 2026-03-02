@@ -25,6 +25,10 @@ class _KeyboardScreenState extends State<KeyboardScreen>
   bool _useTypeStr = false;
   static const _keyTypeStr = 'kb_use_typestr';
 
+  // 逐字模式：零宽空格哨兵，使退格键在空输入框时也能被检测
+  static const _sentinel = '\u200B';
+  bool _lockTextUpdate = false;
+
   // 自定义快捷键（从服务端拉取）
   List<Map<String, dynamic>> _customShortcuts = [];
 
@@ -32,6 +36,7 @@ class _KeyboardScreenState extends State<KeyboardScreen>
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+    _textController.addListener(_handleDirectInput);
     _loadInputMode();
     _loadCustomShortcuts();
   }
@@ -39,7 +44,51 @@ class _KeyboardScreenState extends State<KeyboardScreen>
   Future<void> _loadInputMode() async {
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
-    setState(() => _useTypeStr = prefs.getBool(_keyTypeStr) ?? false);
+    final v = prefs.getBool(_keyTypeStr) ?? false;
+    setState(() => _useTypeStr = v);
+    if (v) _initDirectMode();
+  }
+
+  /// 进入逐字模式时，将输入框设为哨兵状态（零宽空格 + 光标在末尾）
+  void _initDirectMode() {
+    _lockTextUpdate = true;
+    _textController.value = const TextEditingValue(
+      text: _sentinel,
+      selection: TextSelection.collapsed(offset: 1),
+    );
+    _lockTextUpdate = false;
+  }
+
+  /// 逐字模式下的输入监听：每次文本变化立即发送并重置
+  void _handleDirectInput() {
+    if (_lockTextUpdate || !_useTypeStr) return;
+    final text = _textController.text;
+    if (text == _sentinel) return; // 仅哨兵，无变化
+
+    _lockTextUpdate = true;
+
+    if (!text.contains(_sentinel)) {
+      // 哨兵被删掉 → 退格键
+      widget.udpService.sendKeyTap(KeyCodes.backspace);
+    } else {
+      // 哨兵后有新内容 → 逐字发送
+      final added = text.replaceFirst(_sentinel, '');
+      for (final rune in added.runes) {
+        final ch = String.fromCharCode(rune);
+        if (ch == '\n') {
+          widget.udpService.sendKeyTap(KeyCodes.enter);
+        } else {
+          widget.udpService.sendTextInputDirect(ch);
+        }
+      }
+    }
+
+    // 重置回哨兵状态
+    _textController.value = const TextEditingValue(
+      text: _sentinel,
+      selection: TextSelection.collapsed(offset: 1),
+    );
+    _lockTextUpdate = false;
   }
 
   Future<void> _loadCustomShortcuts() async {
@@ -434,91 +483,15 @@ class _KeyboardScreenState extends State<KeyboardScreen>
   }
 
   Widget _buildTextPanel() {
-    return Padding(
-      padding: const EdgeInsets.all(24),
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // 输入模式切换
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            decoration: BoxDecoration(
-              color: const Color(0xFF16213E),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.tune, color: Color(0xFF2D6CDF), size: 16),
-                const SizedBox(width: 8),
-                const Text('输入模式', style: TextStyle(color: Colors.white70, fontSize: 13)),
-                const Spacer(),
-                Text(
-                  _useTypeStr ? '逐字输入' : '剪贴板粘贴',
-                  style: TextStyle(
-                    color: _useTypeStr ? Colors.orangeAccent : Colors.greenAccent,
-                    fontSize: 12,
-                  ),
-                ),
-                const SizedBox(width: 4),
-                Switch(
-                  value: _useTypeStr,
-                  onChanged: (v) {
-                    setState(() => _useTypeStr = v);
-                    SharedPreferences.getInstance()
-                        .then((p) => p.setBool(_keyTypeStr, v));
-                  },
-                  activeThumbColor: Colors.orangeAccent,
-                  inactiveThumbColor: Colors.greenAccent,
-                  inactiveTrackColor: Colors.greenAccent.withAlpha(60),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            _useTypeStr
-                ? '逐字输入：逐个字符发送，适合无法粘贴的场景，速度较慢'
-                : '剪贴板粘贴：写入剪贴板后触发 Cmd/Ctrl+V，速度快',
-            style: const TextStyle(color: Colors.white38, fontSize: 12),
-          ),
-          const SizedBox(height: 16),
-          TextField(
-            controller: _textController,
-            maxLines: 5,
-            style: const TextStyle(color: Colors.white),
-            decoration: InputDecoration(
-              hintText: '在此输入要发送的文字...',
-              hintStyle: const TextStyle(color: Colors.white30),
-              filled: true,
-              fillColor: const Color(0xFF16213E),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide.none,
-              ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: const BorderSide(color: Color(0xFF2D6CDF), width: 2),
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
-          ElevatedButton.icon(
-            onPressed: _sendText,
-            icon: Icon(_useTypeStr ? Icons.keyboard : Icons.send),
-            label: Text(
-              _useTypeStr ? '逐字发送' : '发送并粘贴',
-              style: const TextStyle(fontSize: 16),
-            ),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: _useTypeStr ? Colors.orange.shade700 : const Color(0xFF2D6CDF),
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(vertical: 14),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            ),
-          ),
-          const SizedBox(height: 24),
-          const Text('常用单键', style: TextStyle(color: Colors.white54, fontSize: 13)),
-          const SizedBox(height: 12),
+          // ① 常用单键（顶部）
+          const Text('常用单键',
+              style: TextStyle(color: Colors.white54, fontSize: 13)),
+          const SizedBox(height: 10),
           Wrap(
             spacing: 10,
             runSpacing: 10,
@@ -529,6 +502,106 @@ class _KeyboardScreenState extends State<KeyboardScreen>
               _QuickKey(label: '⎋ Esc', keycode: KeyCodes.escape, udp: widget.udpService),
               _QuickKey(label: '␣ 空格', keycode: KeyCodes.space, udp: widget.udpService),
             ],
+          ),
+          const SizedBox(height: 16),
+
+          // ② 发送按钮（仅粘贴模式显示；逐字模式敲即发，不需要按钮）
+          if (!_useTypeStr) ...[
+            ElevatedButton.icon(
+              onPressed: _sendText,
+              icon: const Icon(Icons.send),
+              label: const Text('发送并粘贴', style: TextStyle(fontSize: 16)),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF2D6CDF),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
+
+          // ③ 输入框
+          TextField(
+            controller: _textController,
+            // 逐字模式单行（每字即发）；粘贴模式多行
+            maxLines: _useTypeStr ? 1 : 5,
+            style: const TextStyle(color: Colors.white),
+            decoration: InputDecoration(
+              hintText: _useTypeStr ? null : '在此输入要发送的文字...',
+              hintStyle: const TextStyle(color: Colors.white30),
+              filled: true,
+              fillColor: const Color(0xFF16213E),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide.none,
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide(
+                  color: _useTypeStr
+                      ? Colors.orangeAccent
+                      : const Color(0xFF2D6CDF),
+                  width: 2,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // ④ 输入模式（底部）
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF16213E),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.tune, color: Color(0xFF2D6CDF), size: 16),
+                const SizedBox(width: 8),
+                const Text('输入模式',
+                    style: TextStyle(color: Colors.white70, fontSize: 13)),
+                const Spacer(),
+                Text(
+                  _useTypeStr ? '逐字输入' : '剪贴板粘贴',
+                  style: TextStyle(
+                    color: _useTypeStr
+                        ? Colors.orangeAccent
+                        : Colors.greenAccent,
+                    fontSize: 12,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Switch(
+                  value: _useTypeStr,
+                  onChanged: (v) {
+                    setState(() => _useTypeStr = v);
+                    SharedPreferences.getInstance()
+                        .then((p) => p.setBool(_keyTypeStr, v));
+                    if (v) {
+                      _initDirectMode();
+                    } else {
+                      _lockTextUpdate = true;
+                      _textController.clear();
+                      _lockTextUpdate = false;
+                    }
+                  },
+                  activeThumbColor: Colors.orangeAccent,
+                  inactiveThumbColor: Colors.greenAccent,
+                  inactiveTrackColor: Colors.greenAccent.withAlpha(60),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            _useTypeStr
+                ? '逐字模式：敲入即发，换行键=回车，退格键=退格'
+                : '剪贴板粘贴：写入剪贴板后触发 Cmd/Ctrl+V，速度快',
+            style: const TextStyle(color: Colors.white38, fontSize: 12),
           ),
         ],
       ),

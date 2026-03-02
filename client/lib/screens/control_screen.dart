@@ -1,13 +1,13 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import '../services/udp_service.dart';
 import 'touchpad_screen.dart';
-import 'gyro_screen.dart';
 import 'keyboard_screen.dart';
 import 'connection_screen.dart';
 
-/// 主控制界面：底部 Tab 切换触摸板、空中飞鼠、键盘三种模式
+/// 主控制界面：底部 Tab 切换触摸板（含空中飞鼠）、键盘两种模式
 class ControlScreen extends StatefulWidget {
   final UdpService udpService;
   final String serverIp;
@@ -27,15 +27,18 @@ class _ControlScreenState extends State<ControlScreen> {
   late final List<Widget> _pages;
   StreamSubscription? _disconnectSub;
   StreamSubscription? _latencySub;
+  StreamSubscription? _pingSentSub;
   int _latencyMs = -1;
+  bool _pingSent = false;
+  bool _pongReceived = false;
 
   @override
   void initState() {
     super.initState();
-    WakelockPlus.enable(); // 进入控制页面后禁止屏幕休眠
+    // addPostFrameCallback 确保 iOS 渲染首帧后再调用，避免平台通道时序问题
+    WidgetsBinding.instance.addPostFrameCallback((_) => WakelockPlus.enable());
     _pages = [
       TouchpadScreen(udpService: widget.udpService),
-      GyroScreen(udpService: widget.udpService),
       KeyboardScreen(udpService: widget.udpService),
     ];
 
@@ -44,9 +47,25 @@ class _ControlScreenState extends State<ControlScreen> {
       if (mounted) _onServerDisconnected();
     });
 
-    // 订阅网络延迟更新
+    // 订阅网络延迟更新（pong 收到 → ✅ 绿色）
     _latencySub = widget.udpService.latencyStream.listen((ms) {
-      if (mounted) setState(() => _latencyMs = ms);
+      if (mounted) {
+        setState(() {
+          _latencyMs = ms;
+          _pongReceived = true;
+          _pingSent = false;
+        });
+      }
+    });
+
+    // 订阅 ping 发出事件（⬆️ 绿色，✅ 黄色等待）
+    _pingSentSub = widget.udpService.pingSentStream.listen((_) {
+      if (mounted) {
+        setState(() {
+          _pingSent = true;
+          _pongReceived = false;
+        });
+      }
     });
   }
 
@@ -55,6 +74,7 @@ class _ControlScreenState extends State<ControlScreen> {
     WakelockPlus.disable(); // 离开控制页面后恢复屏幕休眠
     _disconnectSub?.cancel();
     _latencySub?.cancel();
+    _pingSentSub?.cancel();
     super.dispose();
   }
 
@@ -85,32 +105,10 @@ class _ControlScreenState extends State<ControlScreen> {
     );
   }
 
-  /// 从 serverOs 获取友好的操作系统名称
-  String get _osLabel {
-    switch (widget.udpService.serverOs) {
-      case 0: return 'Windows';
-      case 1: return 'macOS';
-      case 2: return 'Linux';
-      default: return widget.serverIp;
-    }
-  }
-
-  IconData get _osIcon {
-    switch (widget.udpService.serverOs) {
-      case 0: return Icons.window;
-      case 1: return Icons.laptop_mac;
-      case 2: return Icons.computer;
-      default: return Icons.wifi;
-    }
-  }
-
-  Color get _osColor {
-    switch (widget.udpService.serverOs) {
-      case 0: return Colors.lightBlueAccent;
-      case 1: return Colors.white70;
-      case 2: return Colors.orangeAccent;
-      default: return Colors.greenAccent;
-    }
+  /// 设备显示名：优先用主机名，否则用 IP
+  String get _deviceLabel {
+    final h = widget.udpService.serverHostname;
+    return h.isNotEmpty ? h : widget.serverIp;
   }
 
   @override
@@ -119,11 +117,13 @@ class _ControlScreenState extends State<ControlScreen> {
       appBar: AppBar(
         title: Row(
           children: [
-            Icon(_osIcon, size: 16, color: _osColor),
+            _AppBarOsLogo(os: widget.udpService.serverOs),
             const SizedBox(width: 6),
-            Text(_osLabel, style: const TextStyle(fontSize: 15)),
-            const SizedBox(width: 10),
+            Text(_deviceLabel, style: const TextStyle(fontSize: 15)),
+            const SizedBox(width: 8),
             _LatencyBadge(latencyMs: _latencyMs),
+            const SizedBox(width: 6),
+            _HeartbeatDot(pingSent: _pingSent, pongReceived: _pongReceived),
           ],
         ),
         actions: [
@@ -150,17 +150,62 @@ class _ControlScreenState extends State<ControlScreen> {
             label: '触摸板',
           ),
           NavigationDestination(
-            icon: Icon(Icons.screen_rotation_outlined),
-            selectedIcon: Icon(Icons.screen_rotation),
-            label: '空中飞鼠',
-          ),
-          NavigationDestination(
             icon: Icon(Icons.keyboard_outlined),
             selectedIcon: Icon(Icons.keyboard),
             label: '键盘',
           ),
         ],
       ),
+    );
+  }
+}
+
+/// AppBar 系统 Logo（与登录页 _OsLogo 样式一致，尺寸缩小适配标题栏）
+class _AppBarOsLogo extends StatelessWidget {
+  final int os;
+  const _AppBarOsLogo({required this.os});
+
+  @override
+  Widget build(BuildContext context) {
+    switch (os) {
+      case 0:
+        return SvgPicture.asset('assets/windows.svg', width: 18, height: 18,
+            colorFilter: const ColorFilter.mode(Color(0xff01A6F0), BlendMode.srcIn));
+      case 1:
+        return SvgPicture.asset('assets/apple.svg', width: 18, height: 18,
+            colorFilter: const ColorFilter.mode(Color(0xFFCCCCCC), BlendMode.srcIn));
+      case 2:
+        return SvgPicture.asset('assets/linux.svg', width: 18, height: 18);
+      default:
+        return const Icon(Icons.wifi, size: 18, color: Colors.greenAccent);
+    }
+  }
+}
+
+/// 心跳状态指示：⬆️ ping 发出，✅ pong 收到
+class _HeartbeatDot extends StatelessWidget {
+  final bool pingSent;
+  final bool pongReceived;
+  const _HeartbeatDot({required this.pingSent, required this.pongReceived});
+
+  @override
+  Widget build(BuildContext context) {
+    // ⬆️ 颜色：ping 已发 → 绿，否则灰
+    final upColor = pingSent ? Colors.greenAccent : Colors.white24;
+    // ✅ 颜色：pong 已收 → 绿，ping 已发未收 → 黄，否则灰
+    final checkColor = pongReceived
+        ? Colors.greenAccent
+        : pingSent
+            ? Colors.yellowAccent
+            : Colors.white24;
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.arrow_upward_rounded, size: 13, color: upColor),
+        const SizedBox(width: 2),
+        Icon(Icons.check_circle_rounded, size: 13, color: checkColor),
+      ],
     );
   }
 }

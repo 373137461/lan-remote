@@ -328,13 +328,21 @@ func fmtAgo(d time.Duration) string {
 }
 
 func main() {
-	configPath := flag.String("config", "server.conf", "配置文件路径")
+	configPath := flag.String("config", "", "配置文件路径（默认为可执行文件同目录下的 server.conf）")
 	portFlag := flag.Int("port", 0, "UDP 端口（覆盖配置文件）")
 	timeoutFlag := flag.Int("timeout", 0, "超时阈值 ms（覆盖配置文件）")
 	logFlag := flag.String("log", "", "操作日志文件路径（覆盖配置文件）")
 	noGUI := flag.Bool("nogui", false, "无界面模式（仅命令行，不显示托盘和设置窗口）")
 	flag.Parse()
 
+	// 未指定 -config 时，默认使用可执行文件同目录下的 server.conf
+	if *configPath == "" {
+		if exePath, err := os.Executable(); err == nil {
+			*configPath = filepath.Join(filepath.Dir(exePath), "server.conf")
+		} else {
+			*configPath = "server.conf"
+		}
+	}
 	gConfPath = *configPath
 	gCfg = loadConfig(gConfPath)
 	if *portFlag > 0 {
