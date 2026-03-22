@@ -375,8 +375,9 @@ func printClients() {
 
 // startClipboardMonitor 每 500ms 轮询系统剪贴板，文本变化时推送给所有活跃客户端。
 // 格式：[0x12][len 2B][base64 UTF-8]
+// 超过 3000 个字符的内容不推送，避免 UDP 分片丢包。
 func startClipboardMonitor(conn *net.UDPConn) {
-	const maxClipLen = 10000          // 超过此长度截断，避免 UDP 包过大
+	const maxClipRunes = 3000             // 超过此字符数跳过推送
 	const activeWindow = 30 * time.Second // 30s 内有心跳才推送
 
 	var lastClip string
@@ -392,15 +393,28 @@ func startClipboardMonitor(conn *net.UDPConn) {
 			return
 		}
 
-		text, err := robotgo.ReadAll()
+		// robotgo.ReadAll 在某些平台/内容下可能 panic（如复制图片），
+		// 用 recover 兜底，避免整个服务进程崩溃。
+		text, err := func() (t string, e error) {
+			defer func() {
+				if r := recover(); r != nil {
+					e = fmt.Errorf("clipboard panic: %v", r)
+				}
+			}()
+			return robotgo.ReadAll()
+		}()
+
 		if err != nil || text == "" || text == lastClip {
 			continue
 		}
-		lastClip = text
 
-		if len(text) > maxClipLen {
-			text = text[:maxClipLen]
+		// 超长文本跳过，不推送（保护 UDP 包大小和客户端性能）
+		if len([]rune(text)) > maxClipRunes {
+			lastClip = text // 记录已见，避免每轮都检查
+			continue
 		}
+
+		lastClip = text
 
 		b64 := base64.StdEncoding.EncodeToString([]byte(text))
 		b64Bytes := []byte(b64)

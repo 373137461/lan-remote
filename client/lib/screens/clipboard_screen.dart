@@ -45,6 +45,7 @@ class _ClipboardScreenState extends State<ClipboardScreen> {
   // ── 收到服务端推送 ──
   void _onNewText(String text) {
     if (text.trim().isEmpty) return;
+    if (text.length > 3000) return; // 超长文本不入库（服务端已过滤，此处双重保险）
     setState(() {
       // 若内容已存在，移到顶部并保留收藏状态
       final existing = _items.where((i) => i.content == text).toList();
