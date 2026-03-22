@@ -2,6 +2,7 @@ package main
 
 import (
 	_ "embed"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -40,8 +41,10 @@ const (
 	cmdDblClick        = 0x08 // 双击
 	cmdTextInputDirect = 0x09 // 逐字输入（TypeStr，不经剪贴板）
 	cmdSysAction       = 0x0A // 系统操作
+	cmdKeyCombo        = 0x0C // 按键组合（payload: [len 2B][shortcut UTF-8]）
 	cmdPing            = 0x10 // 心跳
 	cmdGetShortcuts    = 0x11 // 获取自定义快捷键列表
+	cmdClipboardPush   = 0x12 // 服务端→客户端 剪贴板推送（[len 2B][base64 UTF-8]）
 
 	// 系统操作码
 	sysLock      = byte(0x01)
@@ -304,6 +307,7 @@ var managerMode bool
 
 type clientInfo struct {
 	ip        string
+	addr      *net.UDPAddr // 最近一次收包地址（用于服务端主动推送）
 	firstSeen time.Time
 	lastSeen  time.Time
 	packets   int64
@@ -315,13 +319,14 @@ var (
 	clients  = map[string]*clientInfo{}
 )
 
-func upsertClient(ip string) {
+func upsertClient(ip string, addr *net.UDPAddr) {
 	clientMu.Lock()
 	defer clientMu.Unlock()
 	if _, ok := clients[ip]; !ok {
-		clients[ip] = &clientInfo{ip: ip, firstSeen: time.Now(), lastSeen: time.Now()}
+		clients[ip] = &clientInfo{ip: ip, addr: addr, firstSeen: time.Now(), lastSeen: time.Now()}
 	} else {
 		clients[ip].lastSeen = time.Now()
+		clients[ip].addr = addr
 	}
 }
 
@@ -366,6 +371,54 @@ func printClients() {
 		)
 	}
 	fmt.Println("=============================")
+}
+
+// startClipboardMonitor 每 500ms 轮询系统剪贴板，文本变化时推送给所有活跃客户端。
+// 格式：[0x12][len 2B][base64 UTF-8]
+func startClipboardMonitor(conn *net.UDPConn) {
+	const maxClipLen = 10000          // 超过此长度截断，避免 UDP 包过大
+	const activeWindow = 30 * time.Second // 30s 内有心跳才推送
+
+	var lastClip string
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		// 当 conn 被替换（热重启）时退出
+		currentUDPConnMu.Lock()
+		active := currentUDPConn == conn
+		currentUDPConnMu.Unlock()
+		if !active {
+			return
+		}
+
+		text, err := robotgo.ReadAll()
+		if err != nil || text == "" || text == lastClip {
+			continue
+		}
+		lastClip = text
+
+		if len(text) > maxClipLen {
+			text = text[:maxClipLen]
+		}
+
+		b64 := base64.StdEncoding.EncodeToString([]byte(text))
+		b64Bytes := []byte(b64)
+		pkt := make([]byte, 3+len(b64Bytes))
+		pkt[0] = cmdClipboardPush
+		pkt[1] = byte(len(b64Bytes) >> 8)
+		pkt[2] = byte(len(b64Bytes))
+		copy(pkt[3:], b64Bytes)
+
+		cutoff := time.Now().Add(-activeWindow)
+		clientMu.RLock()
+		for _, c := range clients {
+			if c.addr != nil && c.lastSeen.After(cutoff) {
+				conn.WriteToUDP(pkt, c.addr) //nolint:errcheck
+			}
+		}
+		clientMu.RUnlock()
+	}
 }
 
 func fmtAgo(d time.Duration) string {
@@ -579,6 +632,9 @@ func runUDPServer() {
 		}
 	}()
 
+	// 剪贴板监听：每 500ms 轮询，变化时推送给所有活跃客户端
+	go startClipboardMonitor(conn)
+
 	buf := make([]byte, bufferSize)
 	for {
 		n, remoteAddr, err := conn.ReadFromUDP(buf)
@@ -622,7 +678,7 @@ func handlePacket(conn *net.UDPConn, addr *net.UDPAddr, data []byte) {
 			authResult = authFail
 			opLog("[%s] 认证失败（密码错误）", ip)
 		} else {
-			upsertClient(ip)
+			upsertClient(ip, addr)
 			if cfg.password != "" {
 				opLog("[%s] 认证成功", ip)
 			} else {
@@ -663,7 +719,7 @@ func handlePacket(conn *net.UDPConn, addr *net.UDPAddr, data []byte) {
 			}
 		} else {
 			conn.WriteToUDP([]byte{cmdPing}, addr) //nolint:errcheck
-			upsertClient(ip)
+			upsertClient(ip, addr)
 		}
 		return
 	}
@@ -798,6 +854,16 @@ func handlePacket(conn *net.UDPConn, addr *net.UDPAddr, data []byte) {
 			action := data[9]
 			opLog("[%s] 系统操作: %s", ip, sysActionName(action))
 			sysAction(action)
+		}
+
+	case cmdKeyCombo:
+		if len(data) >= 11 {
+			keyLen := int(data[9])<<8 | int(data[10])
+			if keyLen > 0 && len(data) >= 11+keyLen {
+				keys := string(data[11 : 11+keyLen])
+				executeShortcutString(keys)
+				opLog("[%s] 按键组合: %s", ip, keys)
+			}
 		}
 	}
 }

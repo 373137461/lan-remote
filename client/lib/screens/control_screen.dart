@@ -5,6 +5,8 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import '../services/udp_service.dart';
 import 'touchpad_screen.dart';
 import 'keyboard_screen.dart';
+import 'macro_screen.dart';
+import 'clipboard_screen.dart';
 import 'connection_screen.dart';
 
 /// 主控制界面：底部 Tab 切换触摸板（含空中飞鼠）、键盘两种模式
@@ -40,6 +42,8 @@ class _ControlScreenState extends State<ControlScreen> {
     _pages = [
       TouchpadScreen(udpService: widget.udpService),
       KeyboardScreen(udpService: widget.udpService),
+      MacroScreen(udpService: widget.udpService),
+      ClipboardScreen(udpService: widget.udpService),
     ];
 
     // 订阅服务端断开事件
@@ -143,6 +147,16 @@ class _ControlScreenState extends State<ControlScreen> {
             icon: Icon(Icons.keyboard_outlined),
             selectedIcon: Icon(Icons.keyboard),
             label: '键盘',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.smart_button_outlined),
+            selectedIcon: Icon(Icons.smart_button),
+            label: '操作宏',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.content_paste_outlined),
+            selectedIcon: Icon(Icons.content_paste),
+            label: '粘贴板',
           ),
         ],
       ),

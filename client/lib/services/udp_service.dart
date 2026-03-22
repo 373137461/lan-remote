@@ -65,6 +65,10 @@ class UdpService {
   final _disconnectController = StreamController<void>.broadcast();
   Stream<void> get disconnectStream => _disconnectController.stream;
 
+  // ── 粘贴板推送流（服务端 0x12） ──
+  final _clipboardController = StreamController<String>.broadcast();
+  Stream<String> get clipboardStream => _clipboardController.stream;
+
   /// 连接到指定 IP，可选密码
   Future<bool> connect(String ip, {int port = defaultPort, String password = ''}) async {
     await disconnect();
@@ -271,6 +275,18 @@ class UdpService {
           } catch (_) {}
           comp.complete();
         }
+      } else if (cmd == 0x12) {
+        // 粘贴板推送：[0x12][len 2B][base64 UTF-8]
+        if (data.length >= 3) {
+          final len = (data[1] << 8) | data[2];
+          if (len > 0 && data.length >= 3 + len) {
+            try {
+              final b64 = String.fromCharCodes(data.sublist(3, 3 + len));
+              final text = utf8.decode(base64.decode(b64));
+              if (text.isNotEmpty) _clipboardController.add(text);
+            } catch (_) {}
+          }
+        }
       }
     });
 
@@ -348,6 +364,13 @@ class UdpService {
     final utf8Bytes = _encodeUtf8(text);
     final lenData = ByteData(2)..setUint16(0, utf8Bytes.length, Endian.big);
     sendCommand(0x09, [...lenData.buffer.asUint8List(), ...utf8Bytes]);
+  }
+
+  /// 按键组合（如 "command+shift+a"，服务端自动映射修饰键）
+  void sendKeyCombo(String keys) {
+    final utf8Bytes = _encodeUtf8(keys);
+    final lenData = ByteData(2)..setUint16(0, utf8Bytes.length, Endian.big);
+    sendCommand(0x0C, [...lenData.buffer.asUint8List(), ...utf8Bytes]);
   }
 
   // ── 系统操作 ──
