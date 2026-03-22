@@ -249,8 +249,12 @@ var keyMap = map[byte]string{
 var opLog func(format string, args ...any)
 
 // workerMode 为 true 时表示进程由服务主进程通过 CreateProcessAsUser 注入到交互式 Session，
-// 使用直接 SendInput 替代 robotgo 进行输入注入。
+// 使用直接 SendInput 替代 robotgo 进行输入注入。无托盘，写 webport 文件。
 var workerMode bool
+
+// managerMode 为 true 时表示用户手动启动 exe，但系统服务 worker 已在运行。
+// 此模式仅显示托盘图标，通过 webport 文件连接到 worker 的 web 配置页，不启动 UDP 服务。
+var managerMode bool
 
 // ── 已连接客户端注册表 ──
 
@@ -369,6 +373,13 @@ func main() {
 	if *workerFlag {
 		workerMode = true
 	}
+	// 管理模式：用户启动 exe，但系统服务 worker 已在运行中
+	// → 仅显示托盘，通过 webport 文件连接 worker 的 web 配置
+	if !workerMode && runtime.GOOS == "windows" {
+		if st := serviceStatus(); st == "running" || st == "starting" {
+			managerMode = true
+		}
+	}
 
 	// 未指定 -config 时，默认使用可执行文件同目录下的 server.conf
 	if *configPath == "" {
@@ -430,14 +441,33 @@ func main() {
 	fmt.Printf("======================================\n\n")
 	opLog("===== 服务启动 OS=%s 端口=%d 认证=%s =====", runtime.GOOS, cfg.port, authMode)
 
+	// 管理模式：不启动 UDP，仅托盘 + 通过 webport 文件连接到 worker 的 web 配置
+	if managerMode {
+		hideConsoleWindow()
+		runTray()
+		return
+	}
+
 	if *noGUI {
 		// 纯命令行模式：UDP 服务器在主 goroutine 阻塞运行
 		runUDPServer()
 		return
 	}
 
-	// 默认 GUI 模式：隐藏命令行窗口，UDP 服务器在后台运行，主线程运行系统托盘
 	hideConsoleWindow()
+
+	if workerMode {
+		// Worker 模式：UDP + web 配置，写端口文件，无托盘
+		// 进程由服务主进程管理，阻塞直到被 Kill
+		go runUDPServer()
+		startWebConfig()
+		writeWebPort(webConfigPort)
+		defer removeWebPortFile()
+		<-make(chan struct{}) // 永久阻塞
+		return
+	}
+
+	// 默认 GUI 模式：UDP 服务器在后台运行，主线程运行系统托盘
 	go runUDPServer()
 	startWebConfig()
 	runTray()

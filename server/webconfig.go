@@ -193,11 +193,18 @@ func startWebConfig() {
 }
 
 // openBrowserConfig 用系统默认浏览器打开配置页。
+// 管理模式下从 webport 文件读取 worker 的端口；普通/worker 模式用全局 webConfigPort。
 func openBrowserConfig() {
-	if webConfigPort == 0 {
+	port := webConfigPort
+	if managerMode {
+		if p, err := readWebPort(); err == nil {
+			port = p
+		}
+	}
+	if port == 0 {
 		return
 	}
-	url := fmt.Sprintf("http://127.0.0.1:%d", webConfigPort)
+	url := fmt.Sprintf("http://127.0.0.1:%d", port)
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"runtime"
-	"time"
 
 	"fyne.io/systray"
 )
@@ -24,9 +23,9 @@ func onTrayReady() {
 	} else {
 		statusText += " · 无密码"
 	}
-	// worker 模式（服务已安装）加上标识
-	if workerMode {
-		statusText += " · 服务模式"
+	// 管理模式：连接到正在运行的系统服务
+	if managerMode {
+		statusText += " · 管理模式"
 	}
 	mStatus := systray.AddMenuItem(statusText, "")
 	mStatus.Disable()
@@ -35,11 +34,8 @@ func onTrayReady() {
 	mSettings := systray.AddMenuItem("设置...", "打开网页配置")
 	systray.AddSeparator()
 
-	// worker 模式下开机自启动由服务管理，隐藏此项
-	var mAutostart *systray.MenuItem
-	if !workerMode {
-		mAutostart = systray.AddMenuItemCheckbox("开机自启动", "", isAutoStartEnabled())
-	}
+	// 开机自启动（普通模式和管理模式均显示，worker 模式已不运行托盘）
+	mAutostart := systray.AddMenuItemCheckbox("开机自启动", "", isAutoStartEnabled())
 
 	// Windows 专属：系统服务安装 / 卸载
 	var mSvcInstall, mSvcUninstall *systray.MenuItem
@@ -47,21 +43,10 @@ func onTrayReady() {
 		systray.AddSeparator()
 		mSvcInstall = systray.AddMenuItem("安装为系统服务", "开机自启，支持在登录界面控制鼠标键盘")
 		mSvcUninstall = systray.AddMenuItem("卸载系统服务", "")
-		if isServiceInstalled() {
-			mSvcInstall.Disable()
-		} else {
-			mSvcUninstall.Disable()
-		}
 	}
 
 	systray.AddSeparator()
-	var mQuit *systray.MenuItem
-	if workerMode {
-		// worker 模式退出后服务会在 3 秒内自动重启，给出提示
-		mQuit = systray.AddMenuItem("退出托盘（服务将自动重启）", "")
-	} else {
-		mQuit = systray.AddMenuItem("退出", "退出局域网键鼠遥控器")
-	}
+	mQuit := systray.AddMenuItem("退出", "退出局域网键鼠遥控器")
 
 	go func() {
 		for {
@@ -75,22 +60,20 @@ func onTrayReady() {
 		}
 	}()
 
-	// 开机自启动（仅非服务模式）
-	if mAutostart != nil {
-		go func() {
-			for range mAutostart.ClickedCh {
-				enabled := !isAutoStartEnabled()
-				if err := setAutoStart(enabled); err != nil {
-					fmt.Printf("自启动设置失败: %v\n", err)
-				}
-				if isAutoStartEnabled() {
-					mAutostart.Check()
-				} else {
-					mAutostart.Uncheck()
-				}
+	// 开机自启动
+	go func() {
+		for range mAutostart.ClickedCh {
+			enabled := !isAutoStartEnabled()
+			if err := setAutoStart(enabled); err != nil {
+				fmt.Printf("自启动设置失败: %v\n", err)
 			}
-		}()
-	}
+			if isAutoStartEnabled() {
+				mAutostart.Check()
+			} else {
+				mAutostart.Uncheck()
+			}
+		}
+	}()
 
 	// Windows 服务安装/卸载菜单处理
 	if runtime.GOOS == "windows" && mSvcInstall != nil {
@@ -98,23 +81,9 @@ func onTrayReady() {
 			for {
 				select {
 				case <-mSvcInstall.ClickedCh:
-					go func() {
-						elevateAndRun("-install-service") //nolint:errcheck
-						time.Sleep(2 * time.Second)
-						if isServiceInstalled() {
-							mSvcInstall.Disable()
-							mSvcUninstall.Enable()
-						}
-					}()
+					go elevateAndRun("-install-service") //nolint:errcheck
 				case <-mSvcUninstall.ClickedCh:
-					go func() {
-						elevateAndRun("-uninstall-service") //nolint:errcheck
-						time.Sleep(2 * time.Second)
-						if !isServiceInstalled() {
-							mSvcUninstall.Disable()
-							mSvcInstall.Enable()
-						}
-					}()
+					go elevateAndRun("-uninstall-service") //nolint:errcheck
 				}
 			}
 		}()
