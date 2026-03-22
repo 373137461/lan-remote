@@ -132,7 +132,15 @@ setInterval(loadDevices,5000);
 <div id="svc-actions"></div>
 </div>
 <script>
-var svcStatusMap={'running':'✅ 运行中','stopped':'⏹ 已停止','starting':'⏳ 启动中','stopping':'⏳ 停止中','not_installed':'未安装','unknown':'未知','not_available':'不可用'};
+var svcStatusMap={
+  'running':      '已安装 / 正在运行',
+  'starting':     '已安装 / 正在启动…',
+  'stopping':     '已安装 / 正在停止…',
+  'stopped':      '已安装 / 未运行',
+  'not_installed':'未安装',
+  'unknown':      '未知',
+  'not_available':'不可用'
+};
 function loadSvcStatus(){
   fetch('/api/service/status').then(r=>r.json()).then(data=>{
     var s=data.status;

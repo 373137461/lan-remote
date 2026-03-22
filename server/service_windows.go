@@ -44,34 +44,80 @@ func isServiceInstalled() bool {
 	return true
 }
 
+// serviceStatus 查询服务状态，使用最低访问权限（SC_MANAGER_CONNECT + SERVICE_QUERY_STATUS），
+// 普通用户进程也可调用，无需管理员权限。
 func serviceStatus() string {
-	m, err := mgr.Connect()
-	if err != nil {
+	// 绕过 mgr.Connect()（它使用 SC_MANAGER_ALL_ACCESS，非管理员会失败）
+	// 直接用 WinAPI 以最小权限打开 SCM
+	scmH, _, _ := procOpenSCManagerW.Call(0, 0, _SC_MANAGER_CONNECT)
+	if scmH == 0 {
 		return "unknown"
 	}
-	defer m.Disconnect()
-	s, err := m.OpenService(svcName)
-	if err != nil {
+	defer procCloseServiceHandle.Call(scmH)
+
+	svcNamePtr, _ := syscall.UTF16PtrFromString(svcName)
+	svcH, _, _ := procOpenServiceW.Call(scmH, uintptr(unsafe.Pointer(svcNamePtr)), _SERVICE_QUERY_STATUS)
+	if svcH == 0 {
 		return "not_installed"
 	}
-	defer s.Close()
-	st, err := s.Query()
-	if err != nil {
+	defer procCloseServiceHandle.Call(svcH)
+
+	var status _SERVICE_STATUS_PROCESS
+	var needed uint32
+	ret, _, _ := procQueryServiceStatusEx.Call(
+		svcH,
+		0, // SC_STATUS_PROCESS_INFO
+		uintptr(unsafe.Pointer(&status)),
+		uintptr(unsafe.Sizeof(status)),
+		uintptr(unsafe.Pointer(&needed)),
+	)
+	if ret == 0 {
 		return "unknown"
 	}
-	switch st.State {
-	case svc.Running:
+	switch status.CurrentState {
+	case _SVC_RUNNING:
 		return "running"
-	case svc.Stopped:
+	case _SVC_STOPPED:
 		return "stopped"
-	case svc.StartPending:
+	case _SVC_START_PENDING:
 		return "starting"
-	case svc.StopPending:
+	case _SVC_STOP_PENDING:
 		return "stopping"
 	default:
 		return "unknown"
 	}
 }
+
+// ── WinAPI 低权限查询所需常量与结构体 ─────────────────────────────────────
+
+const (
+	_SC_MANAGER_CONNECT   = 0x0001
+	_SERVICE_QUERY_STATUS = 0x0004
+	_SVC_STOPPED          = 1
+	_SVC_START_PENDING    = 2
+	_SVC_STOP_PENDING     = 3
+	_SVC_RUNNING          = 4
+)
+
+type _SERVICE_STATUS_PROCESS struct {
+	ServiceType             uint32
+	CurrentState            uint32
+	ControlsAccepted        uint32
+	Win32ExitCode           uint32
+	ServiceSpecificExitCode uint32
+	CheckPoint              uint32
+	WaitHint                uint32
+	ProcessId               uint32
+	ServiceFlags            uint32
+}
+
+var (
+	modAdvapi32             = windows.NewLazySystemDLL("advapi32.dll")
+	procOpenSCManagerW      = modAdvapi32.NewProc("OpenSCManagerW")
+	procOpenServiceW        = modAdvapi32.NewProc("OpenServiceW")
+	procQueryServiceStatusEx = modAdvapi32.NewProc("QueryServiceStatusEx")
+	procCloseServiceHandle  = modAdvapi32.NewProc("CloseServiceHandle")
+)
 
 func isAdmin() bool {
 	var t windows.Token
