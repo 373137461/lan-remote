@@ -624,6 +624,7 @@ class _KeyTile extends StatefulWidget {
 
 class _KeyTileState extends State<_KeyTile> {
   bool _pressed = false;
+  DateTime? _lastTap;
 
   @override
   Widget build(BuildContext context) {
@@ -635,6 +636,9 @@ class _KeyTileState extends State<_KeyTile> {
       },
       onTapUp: (_) {
         setState(() => _pressed = false);
+        final now = DateTime.now();
+        if (_lastTap != null && now.difference(_lastTap!).inMilliseconds < 300) return;
+        _lastTap = now;
         widget.onTap();
       },
       onTapCancel: () => setState(() => _pressed = false),
@@ -743,6 +747,7 @@ class _SysChip extends StatefulWidget {
 
 class _SysChipState extends State<_SysChip> {
   bool _pressed = false;
+  DateTime? _lastTap;
 
   @override
   Widget build(BuildContext context) {
@@ -755,6 +760,9 @@ class _SysChipState extends State<_SysChip> {
       },
       onTapUp: (_) {
         setState(() => _pressed = false);
+        final now = DateTime.now();
+        if (_lastTap != null && now.difference(_lastTap!).inMilliseconds < 300) return;
+        _lastTap = now;
         widget.onTap();
       },
       onTapCancel: () => setState(() => _pressed = false),
@@ -808,6 +816,7 @@ class _EditChip extends StatefulWidget {
 
 class _EditChipState extends State<_EditChip> {
   bool _pressed = false;
+  DateTime? _lastTap;
 
   @override
   Widget build(BuildContext context) {
@@ -820,6 +829,9 @@ class _EditChipState extends State<_EditChip> {
       },
       onTapUp: (_) {
         setState(() => _pressed = false);
+        final now = DateTime.now();
+        if (_lastTap != null && now.difference(_lastTap!).inMilliseconds < 300) return;
+        _lastTap = now;
         widget.onTap();
       },
       onTapCancel: () => setState(() => _pressed = false),
@@ -874,6 +886,7 @@ class _CustomShortcutChip extends StatefulWidget {
 
 class _CustomShortcutChipState extends State<_CustomShortcutChip> {
   bool _pressed = false;
+  DateTime? _lastTap;
 
   @override
   Widget build(BuildContext context) {
@@ -886,6 +899,9 @@ class _CustomShortcutChipState extends State<_CustomShortcutChip> {
       },
       onTapUp: (_) {
         setState(() => _pressed = false);
+        final now = DateTime.now();
+        if (_lastTap != null && now.difference(_lastTap!).inMilliseconds < 300) return;
+        _lastTap = now;
         widget.onTap();
       },
       onTapCancel: () => setState(() => _pressed = false),

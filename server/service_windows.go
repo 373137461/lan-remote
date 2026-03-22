@@ -112,11 +112,12 @@ type _SERVICE_STATUS_PROCESS struct {
 }
 
 var (
-	modAdvapi32             = windows.NewLazySystemDLL("advapi32.dll")
-	procOpenSCManagerW      = modAdvapi32.NewProc("OpenSCManagerW")
-	procOpenServiceW        = modAdvapi32.NewProc("OpenServiceW")
+	modAdvapi32              = windows.NewLazySystemDLL("advapi32.dll")
+	procOpenSCManagerW       = modAdvapi32.NewProc("OpenSCManagerW")
+	procOpenServiceW         = modAdvapi32.NewProc("OpenServiceW")
 	procQueryServiceStatusEx = modAdvapi32.NewProc("QueryServiceStatusEx")
-	procCloseServiceHandle  = modAdvapi32.NewProc("CloseServiceHandle")
+	procCloseServiceHandle   = modAdvapi32.NewProc("CloseServiceHandle")
+	procCreateMutexW         = modKernel32.NewProc("CreateMutexW")
 )
 
 func isAdmin() bool {
@@ -131,6 +132,36 @@ func isAdmin() bool {
 	}
 	ok, err := t.IsMember(sid)
 	return err == nil && ok
+}
+
+// showError 使用 Windows MessageBoxW 弹出错误对话框。
+func showError(msg string) {
+	textPtr, _ := syscall.UTF16PtrFromString(msg)
+	titlePtr, _ := syscall.UTF16PtrFromString("局域网键鼠遥控器")
+	modUser32 := windows.NewLazySystemDLL("user32.dll")
+	modUser32.NewProc("MessageBoxW").Call(
+		0,
+		uintptr(unsafe.Pointer(textPtr)),
+		uintptr(unsafe.Pointer(titlePtr)),
+		0x10, // MB_ICONERROR
+	)
+}
+
+// acquireSingleInstanceMutex 使用 Windows 命名互斥体保证用户进程单实例。
+// 返回 true 表示本进程拿到了锁（可继续运行），false 表示已有实例在运行。
+// 成功时故意不关闭 handle，让其随进程退出自动释放。
+func acquireSingleInstanceMutex() bool {
+	namePtr, _ := syscall.UTF16PtrFromString("Global\\LanRemoteServerTrayInstance")
+	h, _, lastErr := procCreateMutexW.Call(0, 1, uintptr(unsafe.Pointer(namePtr)))
+	if h == 0 {
+		return true // CreateMutex 本身失败，不阻止启动
+	}
+	if lastErr == syscall.Errno(183) { // ERROR_ALREADY_EXISTS
+		procCloseServiceHandle.Call(h)
+		return false
+	}
+	// 持有锁，handle 随进程生命周期存在，不关闭
+	return true
 }
 
 // ── 安装 / 卸载 ───────────────────────────────────────────────────────────
@@ -179,6 +210,35 @@ func uninstallService() error {
 	s.Control(svc.Stop) //nolint:errcheck
 	time.Sleep(time.Second)
 	return s.Delete()
+}
+
+func startService() error {
+	m, err := mgr.Connect()
+	if err != nil {
+		return fmt.Errorf("连接服务控制管理器失败: %w", err)
+	}
+	defer m.Disconnect()
+	s, err := m.OpenService(svcName)
+	if err != nil {
+		return fmt.Errorf("服务不存在: %w", err)
+	}
+	defer s.Close()
+	return s.Start()
+}
+
+func stopService() error {
+	m, err := mgr.Connect()
+	if err != nil {
+		return fmt.Errorf("连接服务控制管理器失败: %w", err)
+	}
+	defer m.Disconnect()
+	s, err := m.OpenService(svcName)
+	if err != nil {
+		return fmt.Errorf("服务不存在: %w", err)
+	}
+	defer s.Close()
+	_, err = s.Control(svc.Stop)
+	return err
 }
 
 // elevateAndRun 用 ShellExecute runas 以管理员权限重新运行当前程序
@@ -390,6 +450,8 @@ func registerServiceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/service/status", handleServiceStatus)
 	mux.HandleFunc("/api/service/install", handleServiceInstall)
 	mux.HandleFunc("/api/service/uninstall", handleServiceUninstall)
+	mux.HandleFunc("/api/service/start", handleServiceStart)
+	mux.HandleFunc("/api/service/stop", handleServiceStop)
 }
 
 func handleServiceStatus(w http.ResponseWriter, _ *http.Request) {
@@ -397,34 +459,38 @@ func handleServiceStatus(w http.ResponseWriter, _ *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": serviceStatus()}) //nolint:errcheck
 }
 
-func handleServiceInstall(w http.ResponseWriter, r *http.Request) {
+// svcHandlerPost 是服务管理 API 的通用封装：若已有管理员权限则直接执行 fn，
+// 否则通过 elevateAndRun 触发 UAC 提权，由提权进程完成操作，返回 202 让前端轮询状态。
+func svcHandlerPost(w http.ResponseWriter, r *http.Request, elevateFlag string, fn func() error) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if !isAdmin() {
-		http.Error(w, "需要管理员权限，请通过托盘图标操作，或以管理员身份运行后刷新", http.StatusForbidden)
+		go elevateAndRun(elevateFlag) //nolint:errcheck
+		w.WriteHeader(http.StatusAccepted)
+		w.Write([]byte("pending")) //nolint:errcheck
 		return
 	}
-	if err := installService(); err != nil {
+	if err := fn(); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.Write([]byte("ok")) //nolint:errcheck
 }
 
+func handleServiceInstall(w http.ResponseWriter, r *http.Request) {
+	svcHandlerPost(w, r, "-install-service", installService)
+}
+
 func handleServiceUninstall(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if !isAdmin() {
-		http.Error(w, "需要管理员权限，请通过托盘图标操作，或以管理员身份运行后刷新", http.StatusForbidden)
-		return
-	}
-	if err := uninstallService(); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Write([]byte("ok")) //nolint:errcheck
+	svcHandlerPost(w, r, "-uninstall-service", uninstallService)
+}
+
+func handleServiceStart(w http.ResponseWriter, r *http.Request) {
+	svcHandlerPost(w, r, "-start-service", startService)
+}
+
+func handleServiceStop(w http.ResponseWriter, r *http.Request) {
+	svcHandlerPost(w, r, "-stop-service", stopService)
 }

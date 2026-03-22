@@ -128,6 +128,50 @@ func restartUDPServer() {
 	go runUDPServer()
 }
 
+// sanitizeFilename 去除文件名中不允许的字符，保留字母、数字、连字符、下划线和点。
+func sanitizeFilename(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('_')
+		}
+	}
+	s := b.String()
+	if s == "" {
+		return "server"
+	}
+	return s
+}
+
+// resolveConfigPath 返回配置文件路径：优先使用 <机器名>.conf，
+// 若不存在则尝试将 server.conf 复制过去，最终兜底为 server.conf。
+func resolveConfigPath() string {
+	exeDir := "."
+	if exePath, err := os.Executable(); err == nil {
+		exeDir = filepath.Dir(exePath)
+	}
+
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		hostname = "server"
+	}
+	named := filepath.Join(exeDir, sanitizeFilename(hostname)+".conf")
+
+	if _, err := os.Stat(named); err == nil {
+		return named // 已存在，直接使用
+	}
+
+	// 不存在时尝试从 server.conf 复制过来
+	legacy := filepath.Join(exeDir, "server.conf")
+	if data, err := os.ReadFile(legacy); err == nil {
+		os.WriteFile(named, data, 0644) //nolint:errcheck
+	}
+	return named
+}
+
 // loadConfig 读取 key=value 格式配置文件，解析失败时使用默认值
 func loadConfig(path string) serverConfig {
 	cfg := serverConfig{timeout: 50, port: defaultPort}
@@ -345,6 +389,8 @@ func main() {
 	workerFlag := flag.Bool("worker", false, "以工作进程模式运行（由服务主进程启动）")
 	installSvcFlag := flag.Bool("install-service", false, "安装为 Windows 服务（需管理员权限）")
 	uninstallSvcFlag := flag.Bool("uninstall-service", false, "卸载 Windows 服务（需管理员权限）")
+	startSvcFlag := flag.Bool("start-service", false, "启动 Windows 服务（需管理员权限）")
+	stopSvcFlag := flag.Bool("stop-service", false, "停止 Windows 服务（需管理员权限）")
 	flag.Parse()
 
 	// Windows 服务管理操作（需管理员权限，由 elevateAndRun 触发）
@@ -364,6 +410,22 @@ func main() {
 		fmt.Println("服务卸载成功")
 		return
 	}
+	if *startSvcFlag {
+		if err := startService(); err != nil {
+			fmt.Fprintf(os.Stderr, "启动服务失败: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("服务启动成功")
+		return
+	}
+	if *stopSvcFlag {
+		if err := stopService(); err != nil {
+			fmt.Fprintf(os.Stderr, "停止服务失败: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("服务停止成功")
+		return
+	}
 	// 服务模式：由 SCM 启动，在 Session 0 中管理工作进程
 	if *serviceFlag || isRunningAsService() {
 		runAsService()
@@ -373,21 +435,28 @@ func main() {
 	if *workerFlag {
 		workerMode = true
 	}
-	// 管理模式：用户启动 exe，但系统服务 worker 已在运行中
+	// 管理模式：用户启动 exe，但系统服务已安装
 	// → 仅显示托盘，通过 webport 文件连接 worker 的 web 配置
 	if !workerMode && runtime.GOOS == "windows" {
-		if st := serviceStatus(); st == "running" || st == "starting" {
+		switch serviceStatus() {
+		case "running", "starting":
 			managerMode = true
+		case "stopped":
+			// 服务已安装但未运行，自动以提权方式启动
+			managerMode = true
+			go elevateAndRun("-start-service") //nolint:errcheck
 		}
 	}
 
-	// 未指定 -config 时，默认使用可执行文件同目录下的 server.conf
+	// 用户/管理进程单实例保护：防止重复双击出现多个托盘图标
+	// worker 由服务主进程管理，无需此检查
+	if !workerMode && !acquireSingleInstanceMutex() {
+		return
+	}
+
+	// 未指定 -config 时，默认使用可执行文件同目录下的 <机器名>.conf
 	if *configPath == "" {
-		if exePath, err := os.Executable(); err == nil {
-			*configPath = filepath.Join(filepath.Dir(exePath), "server.conf")
-		} else {
-			*configPath = "server.conf"
-		}
+		*configPath = resolveConfigPath()
 	}
 	gConfPath = *configPath
 	gCfg = loadConfig(gConfPath)

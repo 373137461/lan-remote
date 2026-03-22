@@ -10,9 +10,10 @@ enum ConnectError { none, timeout, wrongPassword }
 class UdpService {
   static const int defaultPort = 8888;
   static const int syncTimeoutMs = 3000;
-  static const int _pingIntervalMs = 15000;  // 15 秒发一次 ping
-  static const int _checkIntervalMs = 5000;  // 5 秒检查一次超时
-  static const int _pongTimeoutMs = 45000;   // 45 秒没收到 pong 则断开（允许漏 2 个 ping）
+  static const int _pingIntervalMs = 3000;      // 3 秒发一次 ping
+  static const int _checkIntervalMs = 3000;     // 3 秒检查一次
+  static const int _pongMissThresholdMs = 4000; // 超过此值视为 1 次心跳异常
+  static const int _maxReconnectAttempts = 3;   // 最多静默重连 3 次
 
   RawDatagramSocket? _socket;
   InternetAddress? _targetIp;
@@ -45,8 +46,11 @@ class UdpService {
   // ── 心跳 ──
   Timer? _pingTimer;
   Timer? _pongCheckTimer;
-  int _lastPongMs = 0;   // 上次收到 pong 的时间戳
-  int _pingSentTime = 0; // 上次发送 ping 的时间戳
+  int _lastPongMs = 0;        // 上次收到 pong 的时间戳
+  int _pingSentTime = 0;      // 上次发送 ping 的时间戳
+  int _reconnectAttempts = 0; // 已尝试静默重连次数
+  bool _reconnecting = false; // 正在静默重连中
+  String _lastPassword = '';  // 连接时的密码，供重连使用
 
   // ── 网络延迟 ──
   int latencyMs = -1;
@@ -72,6 +76,7 @@ class UdpService {
     try {
       _targetIp = InternetAddress(ip);
       _targetPort = port;
+      _lastPassword = password;
       _socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
       _socket!.broadcastEnabled = false;
 
@@ -103,6 +108,8 @@ class UdpService {
 
   void _startHeartbeat() {
     _lastPongMs = DateTime.now().millisecondsSinceEpoch;
+    _reconnectAttempts = 0;
+    _reconnecting = false;
     _pingTimer?.cancel();
     // 连接后立即发一次 ping，让 ⬆️ 指示灯即刻生效
     Timer(const Duration(milliseconds: 200), _sendPing);
@@ -114,13 +121,47 @@ class UdpService {
     _pongCheckTimer = Timer.periodic(
       const Duration(milliseconds: _checkIntervalMs),
       (_) {
-        if (!_connected) return;
+        if (_reconnecting) return; // 等待重连结果
         final now = DateTime.now().millisecondsSinceEpoch;
-        if (now - _lastPongMs > _pongTimeoutMs) {
-          _onServerDisconnected();
+        if (now - _lastPongMs > _pongMissThresholdMs) {
+          // 心跳异常：尝试静默重连
+          if (_reconnectAttempts >= _maxReconnectAttempts) {
+            _onServerDisconnected();
+          } else {
+            _reconnecting = true;
+            _reconnectAttempts++;
+            _silentReconnect();
+          }
         }
       },
     );
+  }
+
+  Future<void> _silentReconnect() async {
+    _pingTimer?.cancel();
+    _pingTimer = null;
+    await _socketSub?.cancel();
+    _socketSub = null;
+    _socket?.close();
+    _socket = null;
+
+    try {
+      _socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+      _socket!.broadcastEnabled = false;
+      final success = await _syncTime(password: _lastPassword);
+      if (success) {
+        _connected = true;
+        _reconnectAttempts = 0;
+        _lastPongMs = DateTime.now().millisecondsSinceEpoch;
+        // 重启 ping 定时器（check 定时器仍在运行）
+        Timer(const Duration(milliseconds: 200), _sendPing);
+        _pingTimer = Timer.periodic(
+          const Duration(milliseconds: _pingIntervalMs),
+          (_) => _sendPing(),
+        );
+      }
+    } catch (_) {}
+    _reconnecting = false;
   }
 
   void _stopHeartbeat() {

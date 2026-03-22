@@ -149,16 +149,26 @@ function loadSvcStatus(){
     if(s==='not_installed'){
       a.innerHTML='<button type="button" onclick="svcDo(\'install\')" style="background:#34c759">安装为系统服务</button>'
         +'<p class="hint" style="margin-top:8px">若按钮无效请以管理员身份运行，或使用托盘图标操作。</p>';
+    } else if(s==='running'||s==='starting'){
+      a.innerHTML='<button type="button" onclick="svcDo(\'stop\')" style="background:#ff9500;margin-top:0">停止服务</button>'
+        +'<button type="button" onclick="svcDo(\'uninstall\')" style="background:#ff3b30;margin-top:8px">卸载系统服务</button>';
     } else {
-      a.innerHTML='<button type="button" onclick="svcDo(\'uninstall\')" style="background:#ff3b30;margin-top:0">卸载系统服务</button>';
+      a.innerHTML='<button type="button" onclick="svcDo(\'start\')" style="background:#34c759;margin-top:0">启动服务</button>'
+        +'<button type="button" onclick="svcDo(\'uninstall\')" style="background:#ff3b30;margin-top:8px">卸载系统服务</button>';
     }
   }).catch(function(){document.getElementById('svc-status').textContent='状态：获取失败';});
 }
 function svcDo(action){
   fetch('/api/service/'+action,{method:'POST'}).then(r=>{
-    if(r.ok){setTimeout(loadSvcStatus,1500);}
-    else{r.text().then(function(t){alert('操作失败: '+t);});}
-  }).catch(function(e){alert('请求失败，请以管理员身份运行: '+e);});
+    if(r.ok){
+      // 202 pending = UAC 提权中（非管理员），延迟稍长后轮询
+      var delay=r.status===202?3000:1500;
+      setTimeout(loadSvcStatus,delay);
+      setTimeout(loadSvcStatus,delay+3000);
+    } else {
+      r.text().then(function(t){alert('操作失败: '+t);});
+    }
+  }).catch(function(e){alert('请求失败: '+e);});
 }
 loadSvcStatus();setInterval(loadSvcStatus,10000);
 </script>

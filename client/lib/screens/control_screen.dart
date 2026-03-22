@@ -84,14 +84,6 @@ class _ControlScreenState extends State<ControlScreen> {
         builder: (_) => ConnectionScreen(udpService: widget.udpService),
       ),
     );
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('与服务端失去连接，已自动断开'),
-        backgroundColor: Colors.redAccent,
-        behavior: SnackBarBehavior.floating,
-        duration: Duration(seconds: 3),
-      ),
-    );
   }
 
   Future<void> _disconnect() async {
