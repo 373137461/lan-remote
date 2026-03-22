@@ -24,13 +24,22 @@ func onTrayReady() {
 	} else {
 		statusText += " · 无密码"
 	}
+	// worker 模式（服务已安装）加上标识
+	if workerMode {
+		statusText += " · 服务模式"
+	}
 	mStatus := systray.AddMenuItem(statusText, "")
 	mStatus.Disable()
 
 	systray.AddSeparator()
 	mSettings := systray.AddMenuItem("设置...", "打开网页配置")
 	systray.AddSeparator()
-	mAutostart := systray.AddMenuItemCheckbox("开机自启动", "", isAutoStartEnabled())
+
+	// worker 模式下开机自启动由服务管理，隐藏此项
+	var mAutostart *systray.MenuItem
+	if !workerMode {
+		mAutostart = systray.AddMenuItemCheckbox("开机自启动", "", isAutoStartEnabled())
+	}
 
 	// Windows 专属：系统服务安装 / 卸载
 	var mSvcInstall, mSvcUninstall *systray.MenuItem
@@ -46,14 +55,30 @@ func onTrayReady() {
 	}
 
 	systray.AddSeparator()
-	mQuit := systray.AddMenuItem("退出", "退出局域网键鼠遥控器")
+	var mQuit *systray.MenuItem
+	if workerMode {
+		// worker 模式退出后服务会在 3 秒内自动重启，给出提示
+		mQuit = systray.AddMenuItem("退出托盘（服务将自动重启）", "")
+	} else {
+		mQuit = systray.AddMenuItem("退出", "退出局域网键鼠遥控器")
+	}
 
 	go func() {
 		for {
 			select {
 			case <-mSettings.ClickedCh:
 				openBrowserConfig()
-			case <-mAutostart.ClickedCh:
+			case <-mQuit.ClickedCh:
+				systray.Quit()
+				os.Exit(0)
+			}
+		}
+	}()
+
+	// 开机自启动（仅非服务模式）
+	if mAutostart != nil {
+		go func() {
+			for range mAutostart.ClickedCh {
 				enabled := !isAutoStartEnabled()
 				if err := setAutoStart(enabled); err != nil {
 					fmt.Printf("自启动设置失败: %v\n", err)
@@ -63,14 +88,11 @@ func onTrayReady() {
 				} else {
 					mAutostart.Uncheck()
 				}
-			case <-mQuit.ClickedCh:
-				systray.Quit()
-				os.Exit(0)
 			}
-		}
-	}()
+		}()
+	}
 
-	// Windows 服务安装/卸载菜单处理（独立 goroutine 避免阻塞主 select）
+	// Windows 服务安装/卸载菜单处理
 	if runtime.GOOS == "windows" && mSvcInstall != nil {
 		go func() {
 			for {

@@ -311,7 +311,7 @@ func spawnWorkerInSession(sessionId uint32) (*os.Process, error) {
 		return nil, err
 	}
 
-	cmdLine := `"` + exePath + `" -worker -nogui`
+	cmdLine := `"` + exePath + `" -worker`
 	cmdLinePtr, err := syscall.UTF16PtrFromString(cmdLine)
 	if err != nil {
 		return nil, err
@@ -323,7 +323,7 @@ func spawnWorkerInSession(sessionId uint32) (*os.Process, error) {
 	var pi windows.ProcessInformation
 	if err := windows.CreateProcessAsUser(primaryToken, nil, cmdLinePtr,
 		nil, nil, false,
-		windows.CREATE_NEW_CONSOLE|windows.CREATE_UNICODE_ENVIRONMENT,
+		windows.CREATE_NO_WINDOW|windows.CREATE_UNICODE_ENVIRONMENT,
 		nil, nil, &si, &pi); err != nil {
 		return nil, fmt.Errorf("CreateProcessAsUser 失败: %w", err)
 	}
