@@ -23,7 +23,7 @@ class CollapseCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       decoration: BoxDecoration(
-        color: const Color(0xFF16213E),
+        color: Theme.of(context).colorScheme.surface,
         borderRadius: BorderRadius.circular(14),
       ),
       child: Column(
@@ -40,7 +40,7 @@ class CollapseCard extends StatelessWidget {
                   AnimatedRotation(
                     turns: expanded ? 0.5 : 0.0,
                     duration: const Duration(milliseconds: 220),
-                    child: const Icon(Icons.expand_more, color: Colors.white38, size: 20),
+                    child: Icon(Icons.expand_more, color: Theme.of(context).colorScheme.onSurface.withAlpha(97), size: 20),
                   ),
                 ],
               ),

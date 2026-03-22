@@ -255,12 +255,12 @@ class _TouchpadScreenState extends State<TouchpadScreen> {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        _buildSettings(),
+        _buildSettings(context),
         Expanded(
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Expanded(child: _buildTouchpadArea()),
+              Expanded(child: _buildTouchpadArea(context)),
               SizedBox(
                 width: 54,
                 child: _SpringScrollSlider(
@@ -271,13 +271,14 @@ class _TouchpadScreenState extends State<TouchpadScreen> {
             ],
           ),
         ),
-        _buildBottomButtons(),
+        _buildBottomButtons(context),
       ],
     );
   }
 
   // ── 设置区（触摸板 + 飞鼠合并为一张折叠卡） ──
-  Widget _buildSettings() {
+  Widget _buildSettings(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     final gyroSummary = _gyroActive
         ? '飞鼠运行中'
         : '飞鼠 ${_gyroSensitivity.toStringAsFixed(0)}';
@@ -291,8 +292,8 @@ class _TouchpadScreenState extends State<TouchpadScreen> {
           children: [
             const Icon(Icons.tune, color: Color(0xFF2D6CDF), size: 14),
             const SizedBox(width: 6),
-            const Text('设置',
-                style: TextStyle(color: Colors.white70, fontSize: 13)),
+            Text('设置',
+                style: TextStyle(color: cs.onSurface.withAlpha(178), fontSize: 13)),
             const Spacer(),
             if (_gyroActive)
               Container(
@@ -309,7 +310,7 @@ class _TouchpadScreenState extends State<TouchpadScreen> {
               '触控 ${_touchSensitivity.toStringAsFixed(1)}  ·  '
               '滚轮 ${_scrollSensitivity.toStringAsFixed(1)}  ·  $gyroSummary',
               style: TextStyle(
-                color: _gyroActive ? Colors.greenAccent : Colors.white38,
+                color: _gyroActive ? Colors.greenAccent : cs.onSurface.withAlpha(97),
                 fontSize: 11,
               ),
             ),
@@ -317,7 +318,7 @@ class _TouchpadScreenState extends State<TouchpadScreen> {
         ),
         body: Column(
           children: [
-            const Divider(color: Colors.white10, height: 1),
+            const Divider(height: 1),
             const SizedBox(height: 10),
             // 触摸板灵敏度
             _SensitivityRow(
@@ -341,7 +342,7 @@ class _TouchpadScreenState extends State<TouchpadScreen> {
                 _savePrefs();
               },
             ),
-            const Divider(color: Colors.white10, height: 20),
+            const Divider(height: 20),
             // 空中飞鼠
             _SensitivityRow(
               label: '飞鼠灵敏度',
@@ -375,8 +376,8 @@ class _TouchpadScreenState extends State<TouchpadScreen> {
                   ? '竖持手机：左右转→鼠标X，前后倾→鼠标Y'
                   : '启动后转动手机控制鼠标（纯陀螺仪，无回弹）',
               textAlign: TextAlign.center,
-              style: const TextStyle(
-                  color: Colors.white38, fontSize: 12, height: 1.4),
+              style: TextStyle(
+                  color: cs.onSurface.withAlpha(97), fontSize: 12, height: 1.4),
             ),
             const SizedBox(height: 4),
           ],
@@ -386,12 +387,17 @@ class _TouchpadScreenState extends State<TouchpadScreen> {
   }
 
   // ── 触摸板主区域（含视觉特效） ──
-  Widget _buildTouchpadArea() {
-    final bgColor = _isDragging
-        ? const Color(0xFF07192E)
-        : _isTouching
-            ? const Color(0xFF0D2A50)
-            : const Color(0xFF0F3460);
+  Widget _buildTouchpadArea(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final isDark = cs.brightness == Brightness.dark;
+    final Color bgColor;
+    if (_isDragging) {
+      bgColor = isDark ? const Color(0xFF07192E) : const Color(0xFFACCBFF);
+    } else if (_isTouching) {
+      bgColor = isDark ? const Color(0xFF0D2A50) : const Color(0xFFBFD8FF);
+    } else {
+      bgColor = isDark ? const Color(0xFF0F3460) : const Color(0xFFDCEBFF);
+    }
 
     return Listener(
       onPointerDown: _onPointerDown,
@@ -428,7 +434,7 @@ class _TouchpadScreenState extends State<TouchpadScreen> {
                       Icon(
                         _isDragging ? Icons.open_with : Icons.touch_app,
                         size: 44,
-                        color: Colors.white.withAlpha(50),
+                        color: cs.onSurface.withAlpha(50),
                       ),
                       const SizedBox(height: 12),
                       Text(
@@ -437,7 +443,7 @@ class _TouchpadScreenState extends State<TouchpadScreen> {
                             : '单指滑动 移动鼠标\n单击 左键 · 双击 左键双击\n长按后滑动 拖拽\n双指轻敲 右键',
                         textAlign: TextAlign.center,
                         style: TextStyle(
-                          color: Colors.white.withAlpha(70),
+                          color: cs.onSurface.withAlpha(70),
                           fontSize: 13,
                           height: 1.8,
                         ),
@@ -454,9 +460,10 @@ class _TouchpadScreenState extends State<TouchpadScreen> {
   }
 
   // ── 底部鼠标按键（左右键均支持长按，与飞鼠样式一致） ──
-  Widget _buildBottomButtons() {
+  Widget _buildBottomButtons(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Container(
-      color: const Color(0xFF16213E),
+      color: cs.surface,
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
       child: Row(
         children: [
@@ -559,21 +566,22 @@ class _SensitivityRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Row(
       children: [
-        Icon(icon, size: 14, color: Colors.white38),
+        Icon(icon, size: 14, color: cs.onSurface.withAlpha(97)),
         const SizedBox(width: 6),
         SizedBox(
           width: 72,
           child: Text(label,
-              style: const TextStyle(color: Colors.white54, fontSize: 12)),
+              style: TextStyle(color: cs.onSurface.withAlpha(138), fontSize: 12)),
         ),
         Expanded(
           child: Slider(
             value: value,
             min: min, max: max, divisions: divisions,
             activeColor: const Color(0xFF2D6CDF),
-            inactiveColor: Colors.white12,
+            inactiveColor: cs.onSurface.withAlpha(30),
             onChanged: onChanged,
           ),
         ),
@@ -582,7 +590,7 @@ class _SensitivityRow extends StatelessWidget {
           child: Text(
             value.toStringAsFixed(1),
             textAlign: TextAlign.right,
-            style: const TextStyle(color: Colors.white54, fontSize: 12),
+            style: TextStyle(color: cs.onSurface.withAlpha(138), fontSize: 12),
           ),
         ),
       ],
@@ -600,15 +608,16 @@ class _GyroChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Column(
       children: [
         Text(label,
-            style: const TextStyle(color: Colors.white38, fontSize: 10)),
+            style: TextStyle(color: cs.onSurface.withAlpha(97), fontSize: 10)),
         const SizedBox(height: 2),
         Text(
           value.toStringAsFixed(2),
-          style: const TextStyle(
-              color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold),
+          style: TextStyle(
+              color: cs.onSurface.withAlpha(178), fontSize: 13, fontWeight: FontWeight.bold),
         ),
       ],
     );
@@ -748,6 +757,10 @@ class _SpringScrollSliderState extends State<_SpringScrollSlider>
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final isDark = cs.brightness == Brightness.dark;
+    final bgColor = isDark ? const Color(0xFF0A2040) : const Color(0xFFE8F2FF);
+
     return LayoutBuilder(
       builder: (ctx, constraints) {
         _halfTrack = (constraints.maxHeight / 2 - 36).clamp(60.0, 200.0);
@@ -760,21 +773,21 @@ class _SpringScrollSliderState extends State<_SpringScrollSlider>
           onVerticalDragUpdate: _onDragUpdate,
           onVerticalDragEnd: _onDragEnd,
           child: Container(
-            decoration: const BoxDecoration(
-              color: Color(0xFF0A2040),
-              border:
-                  Border(left: BorderSide(color: Colors.white10, width: 1)),
+            decoration: BoxDecoration(
+              color: bgColor,
+              border: Border(
+                  left: BorderSide(color: Theme.of(context).dividerColor, width: 1)),
             ),
             child: Stack(
               children: [
-                const Positioned(
+                Positioned(
                   top: 10, left: 0, right: 0,
                   child: Icon(Icons.keyboard_arrow_up,
-                      color: Colors.white24, size: 18),
+                      color: cs.onSurface.withAlpha(61), size: 18),
                 ),
-                const Positioned(
+                Positioned(
                   top: 26, left: 0, right: 0,
-                  child: Icon(Icons.mouse, color: Colors.white12, size: 14),
+                  child: Icon(Icons.mouse, color: cs.onSurface.withAlpha(30), size: 14),
                 ),
                 Positioned(
                   top: 44, bottom: 44, left: 0, right: 0,
@@ -782,7 +795,7 @@ class _SpringScrollSliderState extends State<_SpringScrollSlider>
                     child: Container(
                       width: 3,
                       decoration: BoxDecoration(
-                        color: Colors.white10,
+                        color: cs.onSurface.withAlpha(26),
                         borderRadius: BorderRadius.circular(2),
                       ),
                     ),
@@ -812,10 +825,10 @@ class _SpringScrollSliderState extends State<_SpringScrollSlider>
                         color: Colors.white70, size: 16),
                   ),
                 ),
-                const Positioned(
+                Positioned(
                   bottom: 10, left: 0, right: 0,
                   child: Icon(Icons.keyboard_arrow_down,
-                      color: Colors.white24, size: 18),
+                      color: cs.onSurface.withAlpha(61), size: 18),
                 ),
               ],
             ),
@@ -853,6 +866,8 @@ class _MouseButtonState extends State<_MouseButton> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final isDark = cs.brightness == Brightness.dark;
     return GestureDetector(
       onTapDown: (_) {
         setState(() => _pressed = true);
@@ -881,8 +896,8 @@ class _MouseButtonState extends State<_MouseButton> {
         height: 72,
         decoration: BoxDecoration(
           color: _pressed
-              ? const Color(0xFF1E3A6E)
-              : const Color(0xFF16213E),
+              ? (isDark ? const Color(0xFF1E3A6E) : const Color(0xFF2D6CDF).withAlpha(30))
+              : cs.surface,
           borderRadius: BorderRadius.circular(14),
           border: Border.all(
             color: _pressed
@@ -904,12 +919,12 @@ class _MouseButtonState extends State<_MouseButton> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(widget.icon, size: 22,
-                color: _pressed ? Colors.white : Colors.white54),
+                color: _pressed ? cs.onSurface : cs.onSurface.withAlpha(138)),
             const SizedBox(width: 8),
             Text(
               widget.label,
               style: TextStyle(
-                color: _pressed ? Colors.white : Colors.white70,
+                color: _pressed ? cs.onSurface : cs.onSurface.withAlpha(178),
                 fontSize: 20,
                 fontWeight: FontWeight.w500,
               ),

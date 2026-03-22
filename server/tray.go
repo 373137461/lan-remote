@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"time"
 
 	"fyne.io/systray"
 )
@@ -30,6 +31,20 @@ func onTrayReady() {
 	mSettings := systray.AddMenuItem("设置...", "打开网页配置")
 	systray.AddSeparator()
 	mAutostart := systray.AddMenuItemCheckbox("开机自启动", "", isAutoStartEnabled())
+
+	// Windows 专属：系统服务安装 / 卸载
+	var mSvcInstall, mSvcUninstall *systray.MenuItem
+	if runtime.GOOS == "windows" {
+		systray.AddSeparator()
+		mSvcInstall = systray.AddMenuItem("安装为系统服务", "开机自启，支持在登录界面控制鼠标键盘")
+		mSvcUninstall = systray.AddMenuItem("卸载系统服务", "")
+		if isServiceInstalled() {
+			mSvcInstall.Disable()
+		} else {
+			mSvcUninstall.Disable()
+		}
+	}
+
 	systray.AddSeparator()
 	mQuit := systray.AddMenuItem("退出", "退出局域网键鼠遥控器")
 
@@ -54,6 +69,34 @@ func onTrayReady() {
 			}
 		}
 	}()
+
+	// Windows 服务安装/卸载菜单处理（独立 goroutine 避免阻塞主 select）
+	if runtime.GOOS == "windows" && mSvcInstall != nil {
+		go func() {
+			for {
+				select {
+				case <-mSvcInstall.ClickedCh:
+					go func() {
+						elevateAndRun("-install-service") //nolint:errcheck
+						time.Sleep(2 * time.Second)
+						if isServiceInstalled() {
+							mSvcInstall.Disable()
+							mSvcUninstall.Enable()
+						}
+					}()
+				case <-mSvcUninstall.ClickedCh:
+					go func() {
+						elevateAndRun("-uninstall-service") //nolint:errcheck
+						time.Sleep(2 * time.Second)
+						if !isServiceInstalled() {
+							mSvcUninstall.Disable()
+							mSvcInstall.Enable()
+						}
+					}()
+				}
+			}
+		}()
+	}
 }
 
 // prepareIcon 在 Windows 上将 PNG 包装为最小 ICO 容器（Vista+ 原生支持），

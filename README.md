@@ -14,6 +14,8 @@ iPhone (Flutter iOS)  ──UDP 8888──►  Windows / macOS (Go)
 | 主控端 | Flutter iOS | 采集触摸 / 陀螺仪 / 键盘输入，封装 UDP 包发送 |
 | 被控端 | Go + robotgo | 监听 UDP，解析指令，调用系统 API 驱动鼠标键盘；系统托盘 + 网页配置 |
 
+> **Windows 亮点**：支持以 **系统服务（SYSTEM 权限）** 方式运行，可在系统启动时自动监听，并在 **登录界面（Winlogon 桌面）** 直接注入鼠标和键盘输入，实现远程输入开机密码。
+
 ---
 
 ## 快速开始
@@ -56,9 +58,39 @@ upx --best lan-remote-server.exe      # Windows
 - 查看当前端口和密码状态
 - 打开**设置...**：用默认浏览器打开本地配置页（`http://127.0.0.1:<随机端口>`），在网页中修改密码、UDP 端口、超时阈值、**自定义快捷键**，并实时查看**已连接设备**；**所有修改保存后立即生效**（含端口切换，无需重启）
 - 切换**开机自启动**（macOS 写入 LaunchAgent plist，Windows 写入注册表启动项，Linux 写入 systemd user service）
+- **Windows 专属**：**安装为系统服务** / **卸载系统服务**（见下节）
 - 退出程序
 
 Windows 下程序启动时会自动隐藏命令行窗口（生产构建建议同时加 `-H windowsgui` 编译标志彻底消除黑色窗口闪烁）。使用 `-nogui` 参数可跳过托盘，纯命令行运行（适合服务器、SSH 远程场景）。
+
+#### Windows 系统服务模式（支持登录界面控制）
+
+> **场景**：电脑启动后尚未登录，想用手机远程输入开机密码；或锁屏后需要远程解锁。
+
+普通用户进程受 Windows 安全桌面隔离，无法向登录界面（Winlogon 桌面）注入输入。系统服务模式通过以下架构解决：
+
+```text
+正常运行的 exe（Session 1，用户）
+  └─ 托盘 → "安装为系统服务" → UAC 提示 → 写入 SCM
+                                                ↓
+开机自动：SCM 启动 exe -service（Session 0，SYSTEM）
+  └─ 获取 winlogon.exe 的 SYSTEM 令牌
+  └─ CreateProcessAsUser → exe -worker（Session 1，SYSTEM）
+        ├─ 监听 UDP 8888（直接处理所有控制指令）
+        └─ OpenInputDesktop → SetThreadDesktop → SendInput
+             ├─ 登录界面时：注入到 Winlogon 桌面（可输入密码）
+             └─ 正常桌面时：注入到 Default 桌面（常规控制）
+```
+
+**安装步骤**：
+
+1. 以**普通模式**运行 `lan-remote-server.exe`（不需要管理员）
+2. 托盘图标右键 → **"安装为系统服务"** → 弹出 UAC 提示，确认后自动安装并启动
+3. 重启系统，无需登录即可用手机 App 连接并控制鼠标键盘、输入密码
+
+**卸载**：托盘图标右键 → **"卸载系统服务"** → 确认 UAC
+
+> 服务安装后，"开机自启动"注册表项可选择性移除（服务本身已实现开机自启）。网页配置页（`/api/service/status`）也可查看和管理服务状态。
 
 #### 配置文件（server.conf）
 
@@ -108,6 +140,12 @@ flutter run --release   # 连接 iPhone 后运行
 
 > 连接成功后凭据自动保存，下次启动 App 显示在卡片列表中并自动尝试连接最近一次的设备。手动点击断开则不触发自动重连。
 
+连接成功后进入**控制界面**，AppBar 显示：
+
+- 服务端 OS 图标（SVG）+ **主机名**（或 IP）
+- **延迟徽章**：实时网络延迟，绿色 ≤50ms / 黄色 ≤150ms / 红色 >150ms
+- **心跳指示**：⬆️ 表示 Ping 已发出，✅ 表示 Pong 已收到；进入控制界面后屏幕保持常亮（Wakelock），退出后恢复系统默认
+
 ---
 
 ## 功能详解
@@ -127,12 +165,14 @@ flutter run --release   # 连接 iPhone 后运行
 
 底部大按钮：左键（支持长按拖拽）/ 右键
 
-**灵敏度设置**（点击顶部「触摸板设置」展开）：
+**设置面板**（触摸板与飞鼠合并为一张折叠卡，默认折叠，点击顶部「设置」展开）：
 
 - 触控灵敏度：0.5 ~ 5.0，控制指针移动速度
-- 滚轮灵敏度：0.3 ~ 4.0，控制每 30 像素滑动触发的滚轮次数（灵敏度越高，同样滑动距离触发的滚轮次数越多）
+- 滚轮灵敏度：0.3 ~ 4.0，控制每 30 像素滑动触发的滚轮次数
+- 飞鼠灵敏度：1 ~ 20，默认 8
+- 启动 / 停止飞鼠按钮
 
-两项设置自动持久化，下次启动恢复。
+所有灵敏度自动持久化，下次启动恢复。
 
 ---
 
@@ -149,11 +189,6 @@ flutter run --release   # 连接 iPhone 后运行
 
 - **底部**左键 / 右键大按钮，均支持**长按**（按住期间被控端鼠标持续按下，松开后释放，可配合飞鼠做拖拽操作）
 - 发送频率节流至 60 Hz，避免网络拥塞
-
-**控制面板**（默认折叠，点击展开）：
-
-- 灵敏度：1 ~ 20，默认 8，自动持久化
-- 启动 / 停止按钮
 
 ---
 
@@ -206,12 +241,14 @@ flutter run --release   # 连接 iPhone 后运行
 
 #### 文本发送面板
 
-在多行文本框输入内容后点击「发送」，支持两种输入模式（模式自动持久化）：
+在文本框输入内容后发送，支持两种输入模式（模式自动持久化）：
 
 | 模式 | 原理 | 适用场景 |
 | -- | -- | -------- |
 | 剪贴板粘贴（默认） | 服务端写剪贴板 → 触发 Cmd/Ctrl+V | 速度快，支持中文、emoji、长文本 |
 | 逐字输入 | 服务端调用 TypeStr 逐字符发送 | 不支持粘贴的输入框（如远程桌面、游戏） |
+
+**逐字模式**下，输入框每输入一个字符即立即发送、无需按按钮；退格键在空输入框也能被检测（零宽空格哨兵）。
 
 ---
 
@@ -284,15 +321,21 @@ flutter run --release   # 连接 iPhone 后运行
 ```text
 .
 ├── server/
-│   ├── main.go              # UDP 监听、指令分发、robotgo 执行、系统操作
-│   ├── tray.go              # 系统托盘（fyne.io/systray）
-│   ├── webconfig.go         # 本地 HTTP 配置服务 + 内嵌网页
-│   ├── autostart_darwin.go  # macOS LaunchAgent 自启动
-│   ├── autostart_windows.go # Windows 注册表自启动
-│   ├── autostart_linux.go   # Linux systemd user service 自启动
+│   ├── main.go                      # UDP 监听、指令分发、系统操作、worker 模式路由
+│   ├── tray.go                      # 系统托盘（fyne.io/systray）
+│   ├── webconfig.go                 # 本地 HTTP 配置服务 + 内嵌网页（含服务管理 API）
+│   ├── service_windows.go           # Windows 服务安装/卸载/SCM 处理/Session 工作进程注入
+│   ├── service_notwindows.go        # 非 Windows 平台桩
+│   ├── desktop_input_windows.go     # Windows 直接 SendInput（支持 Winlogon 桌面切换）
+│   ├── desktop_input_notwindows.go  # 非 Windows 平台桩
+│   ├── autostart_darwin.go          # macOS LaunchAgent 自启动
+│   ├── autostart_windows.go         # Windows 注册表自启动
+│   ├── autostart_linux.go           # Linux systemd user service 自启动
+│   ├── hidewindow_windows.go        # FreeConsole 隐藏黑窗口
+│   ├── hidewindow_notwindows.go     # 非 Windows 平台桩
 │   ├── assets/
-│   │   └── app_icon.png     # 托盘图标（编译期嵌入）
-│   ├── server.conf          # 运行时配置（密码、端口、超时、日志、自定义快捷键）
+│   │   └── app_icon.png             # 托盘图标（编译期嵌入）
+│   ├── server.conf                  # 运行时配置（密码、端口、超时、日志、自定义快捷键）
 │   ├── go.mod
 │   └── go.sum
 └── client/
@@ -302,11 +345,10 @@ flutter run --release   # 连接 iPhone 后运行
         ├── services/
         │   └── udp_service.dart             # UDP 通信、时间同步、心跳、断开通知流
         ├── screens/
-        │   ├── connection_screen.dart       # 连接页（自动重连、凭据持久化）
-        │   ├── control_screen.dart          # Tab 框架（显示 OS 名、监听断开事件）
-        │   ├── touchpad_screen.dart         # 触摸板（手势、灵敏度、弹簧滚轮）
-        │   ├── gyro_screen.dart             # 空中飞鼠（互补滤波、折叠控制面板）
-        │   └── keyboard_screen.dart         # 键盘（快捷键、音量、系统操作、文本发送）
+        │   ├── connection_screen.dart       # 连接页（自动重连、凭据持久化、WoL 唤醒）
+        │   ├── control_screen.dart          # Tab 框架（主机名、延迟徽章、心跳指示）
+        │   ├── touchpad_screen.dart         # 触摸板 + 飞鼠（合并设置卡、弹簧滚轮）
+        │   └── keyboard_screen.dart         # 键盘（快捷键、逐字输入、系统操作）
         ├── widgets/
         │   └── collapse_card.dart           # 可折叠卡片组件
         └── utils/
@@ -321,16 +363,19 @@ flutter run --release   # 连接 iPhone 后运行
 
 | 包 | 用途 |
 | -- | ---- |
-| `github.com/go-vgo/robotgo` | 跨平台鼠标键盘控制 |
+| `github.com/go-vgo/robotgo` | 跨平台鼠标键盘控制（普通模式） |
 | `fyne.io/systray` | 跨平台系统托盘（轻量，无 GUI 框架依赖） |
+| `golang.org/x/sys/windows/svc` | Windows Service Control Manager 集成 |
+| `golang.org/x/sys/windows` | Windows API（SendInput、桌面切换、进程注入） |
 
 ### 主控端
 
 | 包 | 用途 |
 | -- | ---- |
-| `sensors_plus` | 陀螺仪、磁力计传感器 |
+| `sensors_plus` | 陀螺仪传感器（飞鼠模式） |
 | `shared_preferences` | 本地持久化（设备历史、灵敏度、输入模式） |
 | `flutter_svg` | 渲染 SVG 格式的系统图标（Windows / Apple / Linux） |
+| `wakelock_plus` | 控制界面防止屏幕休眠 |
 
 ---
 
@@ -348,6 +393,9 @@ A: 确认手机和电脑在**同一 Wi-Fi** 下，且服务端正在运行。部
 **Q: 连接后 iPhone 会自动息屏断连吗？**
 A: 不会。进入控制界面后 App 会自动禁止屏幕休眠（Wakelock），退出控制界面后恢复系统默认。
 
+**Q: App 支持深色/浅色模式吗？**
+A: 支持。App 跟随 iOS 系统设置自动切换深色 / 浅色模式，无需手动操作。
+
 **Q: 陀螺仪飞鼠移动鼠标后会自动弹回去？**
 A: 已修复。原因是磁力计互补滤波的修正力会产生回弹，现已改为纯陀螺仪积分，鼠标移动后不再弹回。磁力计数据仅用于诊断展示。
 
@@ -361,7 +409,13 @@ A: 点击托盘图标 → 「设置...」，浏览器会打开本地配置页，
 A: 点击托盘图标 → 「设置...」，在网页中修改端口后保存，**立即生效**（无需重启，主控端重新连接即可）。主控端连接界面的「端口」字段同步修改。
 
 **Q: 如何设置开机自启动？**
-A: 点击托盘图标 → 「开机自启动」切换开关即可。macOS 通过 LaunchAgent 实现，Windows 写入注册表 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，Linux 生成 systemd user service。
+A: 点击托盘图标 → 「开机自启动」切换开关即可。macOS 通过 LaunchAgent 实现，Windows 写入注册表 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，Linux 生成 systemd user service。Windows 下也可安装为系统服务（见上文），服务本身即为自启动，无需再设置注册表项。
+
+**Q: 想在电脑开机后、登录前就能用手机控制（输入密码）？**
+A: Windows 下安装为系统服务即可。托盘图标右键 → 「安装为系统服务」，之后服务开机自动启动，并在登录界面（Winlogon 桌面）注入输入。macOS 的登录界面受 SIP 保护，暂不支持。
+
+**Q: 系统服务模式下登录后普通控制还能用吗？**
+A: 可以。Worker 进程通过 `OpenInputDesktop` 实时探测当前活跃桌面：登录界面时切换到 Winlogon 桌面，正常桌面时切换到 Default 桌面，两种场景无缝切换，不需要重新连接。
 
 **Q: 服务器环境没有图形界面怎么办？**
 A: 使用 `-nogui` 参数启动，跳过托盘和网页配置服务，仅命令行运行：`./lan-remote-server -nogui`。

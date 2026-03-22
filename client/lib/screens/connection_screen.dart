@@ -197,22 +197,23 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
   }
 
   void _showWolDialog(DeviceEntry device) {
+    final cs = Theme.of(context).colorScheme;
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF16213E),
+        backgroundColor: cs.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('连接超时',
-            style: TextStyle(color: Colors.white, fontSize: 16)),
-        content: const Text(
+        title: Text('连接超时',
+            style: TextStyle(color: cs.onSurface, fontSize: 16)),
+        content: Text(
           '设备可能已休眠或关机。\n是否向已知 MAC 地址发送网络唤醒（WoL）魔术包？',
-          style: TextStyle(color: Colors.white60, fontSize: 14),
+          style: TextStyle(color: cs.onSurface.withAlpha(155), fontSize: 14),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('取消',
-                style: TextStyle(color: Colors.white38)),
+            child: Text('取消',
+                style: TextStyle(color: cs.onSurface.withAlpha(97))),
           ),
           TextButton(
             onPressed: () {
@@ -277,10 +278,11 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
   }
 
   void _showAddSheet() {
+    final cs = Theme.of(context).colorScheme;
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      backgroundColor: const Color(0xFF16213E),
+      backgroundColor: cs.surface,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (_) => _AddDeviceSheet(
@@ -294,6 +296,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
     if (!_loaded) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
@@ -309,16 +313,16 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
             const SizedBox(height: 36),
             const _AppLogo(),
             const SizedBox(height: 14),
-            const Text(
+            Text(
               '局域网键鼠遥控器',
               style: TextStyle(
                   fontSize: 20,
                   fontWeight: FontWeight.bold,
-                  color: Colors.white),
+                  color: cs.onSurface),
             ),
             const SizedBox(height: 4),
-            const Text('选择被控设备',
-                style: TextStyle(color: Colors.white38, fontSize: 12)),
+            Text('选择被控设备',
+                style: TextStyle(color: cs.onSurface.withAlpha(97), fontSize: 12)),
             const SizedBox(height: 40),
             Expanded(
               child: SingleChildScrollView(
@@ -345,7 +349,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
               icon: const Icon(Icons.add, size: 15),
               label: const Text('新增地址'),
               style: TextButton.styleFrom(
-                foregroundColor: Colors.white30,
+                foregroundColor: cs.onSurface.withAlpha(76),
                 textStyle: const TextStyle(fontSize: 13),
               ),
             ),
@@ -379,6 +383,7 @@ class _DeviceCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return GestureDetector(
       onTap: enabled ? onTap : null,
       onLongPress: enabled ? () => _confirmDelete(context) : null,
@@ -387,7 +392,7 @@ class _DeviceCard extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            _avatar(),
+            _avatar(context),
             const SizedBox(height: 8),
             SizedBox(
               width: _cardW,
@@ -397,7 +402,9 @@ class _DeviceCard extends StatelessWidget {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
-                  color: enabled ? Colors.white70 : Colors.white30,
+                  color: enabled
+                      ? cs.onSurface.withAlpha(178)
+                      : cs.onSurface.withAlpha(76),
                   fontSize: 11,
                 ),
               ),
@@ -408,20 +415,22 @@ class _DeviceCard extends StatelessWidget {
     );
   }
 
-  Widget _avatar() {
+  Widget _avatar(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final isDark = cs.brightness == Brightness.dark;
     return AnimatedContainer(
       duration: const Duration(milliseconds: 200),
       width: 86,
       height: 86,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        color: const Color(0xFF16213E),
+        color: cs.surface,
         border: Border.all(
           color: isConnecting
               ? const Color(0xFF2D6CDF)
               : enabled
-                  ? const Color(0xFF2A2A4A)
-                  : const Color(0xFF1E1E35),
+                  ? (isDark ? const Color(0xFF2A2A4A) : cs.outlineVariant)
+                  : (isDark ? const Color(0xFF1E1E35) : cs.outlineVariant.withAlpha(100)),
           width: 2,
         ),
         boxShadow: isConnecting
@@ -447,20 +456,21 @@ class _DeviceCard extends StatelessWidget {
   }
 
   void _confirmDelete(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF16213E),
+        backgroundColor: cs.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('删除记录',
-            style: TextStyle(color: Colors.white, fontSize: 16)),
+        title: Text('删除记录',
+            style: TextStyle(color: cs.onSurface, fontSize: 16)),
         content: Text('移除 ${device.ip}？',
-            style: const TextStyle(color: Colors.white60, fontSize: 14)),
+            style: TextStyle(color: cs.onSurface.withAlpha(155), fontSize: 14)),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('取消',
-                style: TextStyle(color: Colors.white38)),
+            child: Text('取消',
+                style: TextStyle(color: cs.onSurface.withAlpha(97))),
           ),
           TextButton(
             onPressed: () {
@@ -529,6 +539,7 @@ class _NoHistoryScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Scaffold(
       body: SafeArea(
         child: SingleChildScrollView(
@@ -539,18 +550,18 @@ class _NoHistoryScreen extends StatelessWidget {
               const SizedBox(height: 40),
               const _AppLogo(),
               const SizedBox(height: 16),
-              const Text(
+              Text(
                 '局域网键鼠遥控器',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                     fontSize: 22,
                     fontWeight: FontWeight.bold,
-                    color: Colors.white),
+                    color: cs.onSurface),
               ),
               const SizedBox(height: 4),
-              const Text('主控端 (iOS)',
+              Text('主控端 (iOS)',
                   textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 13, color: Colors.white38)),
+                  style: TextStyle(fontSize: 13, color: cs.onSurface.withAlpha(97))),
               const SizedBox(height: 44),
               _AddDeviceForm(onConnect: onConnect),
             ],
@@ -569,6 +580,7 @@ class _AddDeviceSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Padding(
       padding: EdgeInsets.only(
         left: 24,
@@ -582,16 +594,15 @@ class _AddDeviceSheet extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Text('新增设备',
+              Text('新增设备',
                   style: TextStyle(
-                      color: Colors.white,
+                      color: cs.onSurface,
                       fontSize: 17,
                       fontWeight: FontWeight.w600)),
               const Spacer(),
               IconButton(
                 onPressed: () => Navigator.pop(context),
-                icon:
-                    const Icon(Icons.close, color: Colors.white38, size: 20),
+                icon: Icon(Icons.close, color: cs.onSurface.withAlpha(97), size: 20),
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(),
               ),
@@ -649,6 +660,7 @@ class _AddDeviceFormState extends State<_AddDeviceForm> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -656,28 +668,33 @@ class _AddDeviceFormState extends State<_AddDeviceForm> {
           controller: _ipCtrl,
           keyboardType:
               const TextInputType.numberWithOptions(decimal: true),
-          style: const TextStyle(color: Colors.white),
-          decoration: _deco('被控端 IP 地址', '例如：192.168.1.100'),
+          decoration: const InputDecoration(
+            labelText: '被控端 IP 地址',
+            hintText: '例如：192.168.1.100',
+          ),
           onSubmitted: (_) => _submit(),
         ),
         const SizedBox(height: 12),
         TextField(
           controller: _portCtrl,
           keyboardType: TextInputType.number,
-          style: const TextStyle(color: Colors.white),
-          decoration: _deco('端口', '默认 8888'),
+          decoration: const InputDecoration(
+            labelText: '端口',
+            hintText: '默认 8888',
+          ),
           onSubmitted: (_) => _submit(),
         ),
         const SizedBox(height: 12),
         TextField(
           controller: _pwdCtrl,
           obscureText: !_pwdVisible,
-          style: const TextStyle(color: Colors.white),
-          decoration: _deco('密码', '被控端未设密码则留空').copyWith(
+          decoration: InputDecoration(
+            labelText: '密码',
+            hintText: '被控端未设密码则留空',
             suffixIcon: IconButton(
               icon: Icon(
                   _pwdVisible ? Icons.visibility_off : Icons.visibility,
-                  color: Colors.white38,
+                  color: cs.onSurface.withAlpha(97),
                   size: 20),
               onPressed: () =>
                   setState(() => _pwdVisible = !_pwdVisible),
@@ -708,23 +725,6 @@ class _AddDeviceFormState extends State<_AddDeviceForm> {
       ],
     );
   }
-
-  InputDecoration _deco(String label, String hint) => InputDecoration(
-        labelText: label,
-        hintText: hint,
-        labelStyle: const TextStyle(color: Colors.white60),
-        hintStyle: const TextStyle(color: Colors.white30),
-        filled: true,
-        fillColor: const Color(0xFF1A1A2E),
-        border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide.none),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide:
-              const BorderSide(color: Color(0xFF2D6CDF), width: 2),
-        ),
-      );
 }
 
 // ── App Logo ─────────────────────────────────────────────────────────────────

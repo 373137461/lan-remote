@@ -139,8 +139,6 @@ class _ControlScreenState extends State<ControlScreen> {
         children: _pages,
       ),
       bottomNavigationBar: NavigationBar(
-        backgroundColor: const Color(0xFF16213E),
-        indicatorColor: const Color(0xFF2D6CDF),
         selectedIndex: _currentIndex,
         onDestinationSelected: (i) => setState(() => _currentIndex = i),
         destinations: const [
@@ -190,14 +188,15 @@ class _HeartbeatDot extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final dimColor = Theme.of(context).colorScheme.onSurface.withAlpha(61);
     // ⬆️ 颜色：ping 已发 → 绿，否则灰
-    final upColor = pingSent ? Colors.greenAccent : Colors.white24;
+    final upColor = pingSent ? Colors.greenAccent : dimColor;
     // ✅ 颜色：pong 已收 → 绿，ping 已发未收 → 黄，否则灰
     final checkColor = pongReceived
         ? Colors.greenAccent
         : pingSent
             ? Colors.yellowAccent
-            : Colors.white24;
+            : dimColor;
 
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -222,7 +221,7 @@ class _LatencyBadge extends StatelessWidget {
 
     if (latencyMs < 0) {
       label = '—';
-      color = Colors.white24;
+      color = Theme.of(context).colorScheme.onSurface.withAlpha(61);
     } else if (latencyMs <= 50) {
       label = '${latencyMs}ms';
       color = Colors.greenAccent;

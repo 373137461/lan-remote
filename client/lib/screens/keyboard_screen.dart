@@ -124,16 +124,18 @@ class _KeyboardScreenState extends State<KeyboardScreen>
 
   /// 系统操作（带确认弹窗）
   void _sysActionWithConfirm(int action, String label) {
+    final cs = Theme.of(context).colorScheme;
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF16213E),
-        title: Text('确认执行', style: const TextStyle(color: Colors.white)),
-        content: Text('确定要执行「$label」吗？', style: const TextStyle(color: Colors.white70)),
+        backgroundColor: cs.surface,
+        title: Text('确认执行', style: TextStyle(color: cs.onSurface)),
+        content: Text('确定要执行「$label」吗？',
+            style: TextStyle(color: cs.onSurface.withAlpha(178))),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('取消', style: TextStyle(color: Colors.white54)),
+            child: Text('取消', style: TextStyle(color: cs.onSurface.withAlpha(138))),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
@@ -153,15 +155,16 @@ class _KeyboardScreenState extends State<KeyboardScreen>
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Column(
       children: [
         Container(
-          color: const Color(0xFF16213E),
+          color: cs.surface,
           child: TabBar(
             controller: _tabController,
             indicatorColor: const Color(0xFF2D6CDF),
-            labelColor: Colors.white,
-            unselectedLabelColor: Colors.white38,
+            labelColor: cs.onSurface,
+            unselectedLabelColor: cs.onSurface.withAlpha(97),
             tabs: const [
               Tab(icon: Icon(Icons.grid_view), text: '快捷键'),
               Tab(icon: Icon(Icons.text_fields), text: '文本发送'),
@@ -172,8 +175,8 @@ class _KeyboardScreenState extends State<KeyboardScreen>
           child: TabBarView(
             controller: _tabController,
             children: [
-              _buildKeyPanel(),
-              _buildTextPanel(),
+              _buildKeyPanel(context),
+              _buildTextPanel(context),
             ],
           ),
         ),
@@ -181,7 +184,7 @@ class _KeyboardScreenState extends State<KeyboardScreen>
     );
   }
 
-  Widget _buildKeyPanel() {
+  Widget _buildKeyPanel(BuildContext context) {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(
@@ -229,13 +232,13 @@ class _KeyboardScreenState extends State<KeyboardScreen>
 
           _buildVolumeSlider(),
           const SizedBox(height: 12),
-          _buildEditShortcuts(),
+          _buildEditShortcuts(context),
           if (_customShortcuts.isNotEmpty) ...[
             const SizedBox(height: 12),
-            _buildCustomShortcuts(),
+            _buildCustomShortcuts(context),
           ],
           const SizedBox(height: 12),
-          _buildSystemShortcuts(),
+          _buildSystemShortcuts(context),
         ],
       ),
     );
@@ -308,7 +311,8 @@ class _KeyboardScreenState extends State<KeyboardScreen>
     );
   }
 
-  Widget _buildEditShortcuts() {
+  Widget _buildEditShortcuts(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     final os = widget.udpService.serverOs;
     final modLabel = os == 1 ? '⌘' : 'Ctrl';
 
@@ -324,17 +328,18 @@ class _KeyboardScreenState extends State<KeyboardScreen>
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: const Color(0xFF16213E),
+        color: cs.surface,
         borderRadius: BorderRadius.circular(14),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Row(
+          Row(
             children: [
-              Icon(Icons.edit_outlined, color: Color(0xFF2D6CDF), size: 16),
-              SizedBox(width: 6),
-              Text('编辑快捷键', style: TextStyle(color: Colors.white70, fontSize: 13)),
+              const Icon(Icons.edit_outlined, color: Color(0xFF2D6CDF), size: 16),
+              const SizedBox(width: 6),
+              Text('编辑快捷键',
+                  style: TextStyle(color: cs.onSurface.withAlpha(178), fontSize: 13)),
             ],
           ),
           const SizedBox(height: 12),
@@ -364,21 +369,23 @@ class _KeyboardScreenState extends State<KeyboardScreen>
     ]);
   }
 
-  Widget _buildCustomShortcuts() {
+  Widget _buildCustomShortcuts(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: const Color(0xFF16213E),
+        color: cs.surface,
         borderRadius: BorderRadius.circular(14),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Row(
+          Row(
             children: [
-              Icon(Icons.stars_outlined, color: Color(0xFF2D6CDF), size: 16),
-              SizedBox(width: 6),
-              Text('自定义快捷键', style: TextStyle(color: Colors.white70, fontSize: 13)),
+              const Icon(Icons.stars_outlined, color: Color(0xFF2D6CDF), size: 16),
+              const SizedBox(width: 6),
+              Text('自定义快捷键',
+                  style: TextStyle(color: cs.onSurface.withAlpha(178), fontSize: 13)),
             ],
           ),
           const SizedBox(height: 12),
@@ -401,7 +408,8 @@ class _KeyboardScreenState extends State<KeyboardScreen>
     );
   }
 
-  Widget _buildSystemShortcuts() {
+  Widget _buildSystemShortcuts(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     final os = widget.udpService.serverOs; // 0=Win, 1=macOS, 2=Linux, -1=未知
 
     // 通用操作（所有平台）
@@ -456,7 +464,7 @@ class _KeyboardScreenState extends State<KeyboardScreen>
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: const Color(0xFF16213E),
+        color: cs.surface,
         borderRadius: BorderRadius.circular(14),
       ),
       child: Column(
@@ -466,9 +474,11 @@ class _KeyboardScreenState extends State<KeyboardScreen>
             children: [
               const Icon(Icons.computer, color: Color(0xFF2D6CDF), size: 16),
               const SizedBox(width: 6),
-              const Text('系统操作', style: TextStyle(color: Colors.white70, fontSize: 13)),
+              Text('系统操作',
+                  style: TextStyle(color: cs.onSurface.withAlpha(178), fontSize: 13)),
               const Spacer(),
-              Text(osHint, style: const TextStyle(color: Colors.white24, fontSize: 11)),
+              Text(osHint,
+                  style: TextStyle(color: cs.onSurface.withAlpha(61), fontSize: 11)),
             ],
           ),
           const SizedBox(height: 12),
@@ -482,15 +492,16 @@ class _KeyboardScreenState extends State<KeyboardScreen>
     );
   }
 
-  Widget _buildTextPanel() {
+  Widget _buildTextPanel(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           // ① 常用单键（顶部）
-          const Text('常用单键',
-              style: TextStyle(color: Colors.white54, fontSize: 13)),
+          Text('常用单键',
+              style: TextStyle(color: cs.onSurface.withAlpha(138), fontSize: 13)),
           const SizedBox(height: 10),
           Wrap(
             spacing: 10,
@@ -527,16 +538,8 @@ class _KeyboardScreenState extends State<KeyboardScreen>
             controller: _textController,
             // 逐字模式单行（每字即发）；粘贴模式多行
             maxLines: _useTypeStr ? 1 : 5,
-            style: const TextStyle(color: Colors.white),
             decoration: InputDecoration(
               hintText: _useTypeStr ? null : '在此输入要发送的文字...',
-              hintStyle: const TextStyle(color: Colors.white30),
-              filled: true,
-              fillColor: const Color(0xFF16213E),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide.none,
-              ),
               focusedBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
                 borderSide: BorderSide(
@@ -555,15 +558,15 @@ class _KeyboardScreenState extends State<KeyboardScreen>
             padding:
                 const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             decoration: BoxDecoration(
-              color: const Color(0xFF16213E),
+              color: cs.surface,
               borderRadius: BorderRadius.circular(12),
             ),
             child: Row(
               children: [
                 const Icon(Icons.tune, color: Color(0xFF2D6CDF), size: 16),
                 const SizedBox(width: 8),
-                const Text('输入模式',
-                    style: TextStyle(color: Colors.white70, fontSize: 13)),
+                Text('输入模式',
+                    style: TextStyle(color: cs.onSurface.withAlpha(178), fontSize: 13)),
                 const Spacer(),
                 Text(
                   _useTypeStr ? '逐字输入' : '剪贴板粘贴',
@@ -601,7 +604,7 @@ class _KeyboardScreenState extends State<KeyboardScreen>
             _useTypeStr
                 ? '逐字模式：敲入即发，换行键=回车，退格键=退格'
                 : '剪贴板粘贴：写入剪贴板后触发 Cmd/Ctrl+V，速度快',
-            style: const TextStyle(color: Colors.white38, fontSize: 12),
+            style: TextStyle(color: cs.onSurface.withAlpha(97), fontSize: 12),
           ),
         ],
       ),
@@ -624,6 +627,7 @@ class _KeyTileState extends State<_KeyTile> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return GestureDetector(
       onTapDown: (_) {
         setState(() => _pressed = true);
@@ -640,12 +644,12 @@ class _KeyTileState extends State<_KeyTile> {
         decoration: BoxDecoration(
           color: _pressed
               ? const Color(0xFF2D6CDF).withAlpha(60)
-              : const Color(0xFF16213E),
+              : cs.surface,
           borderRadius: BorderRadius.circular(10),
           border: Border.all(
             color: _pressed
                 ? const Color(0xFF2D6CDF).withAlpha(180)
-                : Colors.white12,
+                : cs.onSurface.withAlpha(30),
           ),
         ),
         child: Column(
@@ -654,13 +658,13 @@ class _KeyTileState extends State<_KeyTile> {
             Text(
               widget.label,
               style: TextStyle(
-                color: _pressed ? Colors.white : Colors.white70,
+                color: _pressed ? Colors.white : cs.onSurface.withAlpha(178),
                 fontSize: 18,
               ),
             ),
             if (widget.sublabel != null)
               Text(widget.sublabel!,
-                  style: const TextStyle(color: Colors.white38, fontSize: 10)),
+                  style: TextStyle(color: cs.onSurface.withAlpha(97), fontSize: 10)),
           ],
         ),
       ),
@@ -683,6 +687,7 @@ class _QuickKeyState extends State<_QuickKey> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return GestureDetector(
       onTapDown: (_) {
         setState(() => _pressed = true);
@@ -699,7 +704,7 @@ class _QuickKeyState extends State<_QuickKey> {
         decoration: BoxDecoration(
           color: _pressed
               ? const Color(0xFF2D6CDF).withAlpha(50)
-              : const Color(0xFF16213E),
+              : cs.surface,
           borderRadius: BorderRadius.circular(8),
           border: Border.all(
             color: _pressed
@@ -710,7 +715,7 @@ class _QuickKeyState extends State<_QuickKey> {
         child: Text(
           widget.label,
           style: TextStyle(
-            color: _pressed ? Colors.white : Colors.white70,
+            color: _pressed ? Colors.white : cs.onSurface.withAlpha(178),
             fontSize: 13,
           ),
         ),
@@ -741,6 +746,7 @@ class _SysChipState extends State<_SysChip> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     final color = widget.danger ? Colors.redAccent : const Color(0xFF2D6CDF);
     return GestureDetector(
       onTapDown: (_) {
@@ -772,7 +778,7 @@ class _SysChipState extends State<_SysChip> {
               style: TextStyle(
                 color: widget.danger
                     ? Colors.redAccent
-                    : (_pressed ? Colors.white : Colors.white70),
+                    : (_pressed ? Colors.white : cs.onSurface.withAlpha(178)),
                 fontSize: 13,
               ),
             ),
@@ -805,6 +811,7 @@ class _EditChipState extends State<_EditChip> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     const color = Color(0xFF2D6CDF);
     return GestureDetector(
       onTapDown: (_) {
@@ -834,13 +841,13 @@ class _EditChipState extends State<_EditChip> {
             Text(
               widget.label,
               style: TextStyle(
-                color: _pressed ? Colors.white : Colors.white70,
+                color: _pressed ? Colors.white : cs.onSurface.withAlpha(178),
                 fontSize: 11,
               ),
             ),
             Text(
               widget.sublabel,
-              style: const TextStyle(color: Colors.white30, fontSize: 9),
+              style: TextStyle(color: cs.onSurface.withAlpha(76), fontSize: 9),
             ),
           ],
         ),
@@ -870,6 +877,7 @@ class _CustomShortcutChipState extends State<_CustomShortcutChip> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     const color = Color(0xFF2D6CDF);
     return GestureDetector(
       onTapDown: (_) {
@@ -902,7 +910,7 @@ class _CustomShortcutChipState extends State<_CustomShortcutChip> {
                 Text(
                   widget.name,
                   style: TextStyle(
-                    color: _pressed ? Colors.white : Colors.white70,
+                    color: _pressed ? Colors.white : cs.onSurface.withAlpha(178),
                     fontSize: 13,
                   ),
                 ),
@@ -912,7 +920,7 @@ class _CustomShortcutChipState extends State<_CustomShortcutChip> {
               const SizedBox(height: 3),
               Text(
                 widget.desc,
-                style: const TextStyle(color: Colors.white38, fontSize: 10),
+                style: TextStyle(color: cs.onSurface.withAlpha(97), fontSize: 10),
               ),
             ],
           ],

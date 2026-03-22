@@ -248,6 +248,10 @@ var keyMap = map[byte]string{
 // ── 操作日志函数变量：生产环境写文件，开发环境输出控制台 ──
 var opLog func(format string, args ...any)
 
+// workerMode 为 true 时表示进程由服务主进程通过 CreateProcessAsUser 注入到交互式 Session，
+// 使用直接 SendInput 替代 robotgo 进行输入注入。
+var workerMode bool
+
 // ── 已连接客户端注册表 ──
 
 type clientInfo struct {
@@ -333,7 +337,38 @@ func main() {
 	timeoutFlag := flag.Int("timeout", 0, "超时阈值 ms（覆盖配置文件）")
 	logFlag := flag.String("log", "", "操作日志文件路径（覆盖配置文件）")
 	noGUI := flag.Bool("nogui", false, "无界面模式（仅命令行，不显示托盘和设置窗口）")
+	serviceFlag := flag.Bool("service", false, "以 Windows 服务模式运行（由 SCM 调用）")
+	workerFlag := flag.Bool("worker", false, "以工作进程模式运行（由服务主进程启动）")
+	installSvcFlag := flag.Bool("install-service", false, "安装为 Windows 服务（需管理员权限）")
+	uninstallSvcFlag := flag.Bool("uninstall-service", false, "卸载 Windows 服务（需管理员权限）")
 	flag.Parse()
+
+	// Windows 服务管理操作（需管理员权限，由 elevateAndRun 触发）
+	if *installSvcFlag {
+		if err := installService(); err != nil {
+			fmt.Fprintf(os.Stderr, "安装服务失败: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("服务安装成功")
+		return
+	}
+	if *uninstallSvcFlag {
+		if err := uninstallService(); err != nil {
+			fmt.Fprintf(os.Stderr, "卸载服务失败: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("服务卸载成功")
+		return
+	}
+	// 服务模式：由 SCM 启动，在 Session 0 中管理工作进程
+	if *serviceFlag || isRunningAsService() {
+		runAsService()
+		return
+	}
+	// Worker 模式：由服务主进程通过 CreateProcessAsUser 注入到交互式 Session
+	if *workerFlag {
+		workerMode = true
+	}
 
 	// 未指定 -config 时，默认使用可执行文件同目录下的 server.conf
 	if *configPath == "" {
@@ -556,39 +591,66 @@ func handlePacket(conn *net.UDPConn, addr *net.UDPAddr, data []byte) {
 		if len(data) >= 13 {
 			dx := int(int16(binary.BigEndian.Uint16(data[9:11])))
 			dy := int(int16(binary.BigEndian.Uint16(data[11:13])))
-			robotgo.MoveRelative(dx, dy)
+			if workerMode {
+				winMouseMove(dx, dy)
+			} else {
+				robotgo.MoveRelative(dx, dy)
+			}
 		}
 
 	case cmdMouseClick:
 		if len(data) >= 10 {
-			robotgo.Click(buttonName(data[9]))
+			if workerMode {
+				winMouseClick(buttonName(data[9]))
+			} else {
+				robotgo.Click(buttonName(data[9]))
+			}
 		}
 
 	case cmdDblClick:
 		if len(data) >= 10 {
-			robotgo.Click(buttonName(data[9]), true)
+			if workerMode {
+				winMouseDblClick(buttonName(data[9]))
+			} else {
+				robotgo.Click(buttonName(data[9]), true)
+			}
 		}
 
 	case cmdMouseDown:
 		if len(data) >= 10 {
-			robotgo.MouseDown(buttonName(data[9]))
+			if workerMode {
+				winMouseDown(buttonName(data[9]))
+			} else {
+				robotgo.MouseDown(buttonName(data[9]))
+			}
 		}
 
 	case cmdMouseUp:
 		if len(data) >= 10 {
-			robotgo.MouseUp(buttonName(data[9]))
+			if workerMode {
+				winMouseUp(buttonName(data[9]))
+			} else {
+				robotgo.MouseUp(buttonName(data[9]))
+			}
 		}
 
 	case cmdMouseScroll:
 		if len(data) >= 11 {
 			scrollY := int(int16(binary.BigEndian.Uint16(data[9:11])))
-			robotgo.Scroll(0, scrollY)
+			if workerMode {
+				winMouseScroll(scrollY)
+			} else {
+				robotgo.Scroll(0, scrollY)
+			}
 		}
 
 	case cmdKeyTap:
 		if len(data) >= 10 {
 			code := data[9]
-			if keyName, ok := keyMap[code]; ok {
+			if workerMode {
+				winKeyTap(code)
+				opLog("[%s] 按键(worker): 0x%02X", ip, code)
+			} else if keyName, ok := keyMap[code]; ok {
 				robotgo.KeyTap(keyName)
 				opLog("[%s] 按键: %s", ip, keyName)
 			} else if code >= 32 && code <= 126 {
@@ -605,7 +667,13 @@ func handlePacket(conn *net.UDPConn, addr *net.UDPAddr, data []byte) {
 			if len(data) >= 11+textLen && textLen > 0 {
 				text := strings.TrimSpace(string(data[11 : 11+textLen]))
 				if text != "" {
-					pasteText(text)
+					if workerMode {
+						// 登录界面不支持粘贴，直接逐字输入
+						winTypeStr(text)
+						opLog("文本输入(worker逐字): %q", text)
+					} else {
+						pasteText(text)
+					}
 				}
 			}
 		}
@@ -616,7 +684,11 @@ func handlePacket(conn *net.UDPConn, addr *net.UDPAddr, data []byte) {
 			if len(data) >= 11+textLen && textLen > 0 {
 				text := string(data[11 : 11+textLen])
 				if text != "" {
-					robotgo.TypeStr(text)
+					if workerMode {
+						winTypeStr(text)
+					} else {
+						robotgo.TypeStr(text)
+					}
 					opLog("文本输入(逐字): %q", text)
 				}
 			}
@@ -634,6 +706,11 @@ func handlePacket(conn *net.UDPConn, addr *net.UDPAddr, data []byte) {
 // pasteText 写入剪贴板并触发粘贴，写入失败时降级为逐字输入
 // 使用显式 KeyDown + KeyTap + KeyUp 序列，比 KeyTap("v","command") 更可靠
 func pasteText(text string) {
+	if workerMode {
+		winTypeStr(text)
+		opLog("文本输入(worker逐字): %q", text)
+		return
+	}
 	if err := robotgo.WriteAll(text); err != nil {
 		log.Printf("剪贴板写入失败（%v），改用逐字输入", err)
 		robotgo.TypeStr(text)
@@ -667,6 +744,10 @@ func modKey() string {
 
 // keyCombo 按下修饰键 + 敲击目标键 + 松开修饰键
 func keyCombo(mod, key string) {
+	if workerMode {
+		winKeyCombo(mod, key)
+		return
+	}
 	robotgo.KeyDown(mod)
 	time.Sleep(20 * time.Millisecond)
 	robotgo.KeyTap(key)
@@ -743,6 +824,14 @@ func sysAction(action byte) {
 	case sysSave:
 		keyCombo(mod, "s")
 		return
+	}
+
+	// 在 worker 模式下使用直接 SendInput 替代 robotgo
+	if workerMode && runtime.GOOS == "windows" {
+		if winSysActionWindows(action) {
+			return
+		}
+		// exec.Command 路径（sysLock/sysSleep/sysShutdown/sysRestart）继续执行
 	}
 
 	// ── 平台相关操作 ──
@@ -918,6 +1007,10 @@ func mapModifier(m string) string {
 func executeShortcutString(keys string) {
 	keys = strings.TrimSpace(keys)
 	if keys == "" {
+		return
+	}
+	if workerMode {
+		winExecuteShortcutString(keys)
 		return
 	}
 	parts := strings.Split(keys, "+")

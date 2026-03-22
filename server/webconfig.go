@@ -123,6 +123,38 @@ function loadDevices(){
 loadDevices();
 setInterval(loadDevices,5000);
 </script>
+
+{{if .ShowServiceCard}}
+<div class="card" style="margin-top:12px">
+<h2>Windows 系统服务</h2>
+<p class="hint" style="margin-bottom:12px">以系统服务方式运行可在系统启动时自动运行，并支持在登录界面控制鼠标和键盘输入密码。</p>
+<div id="svc-status" style="margin-bottom:8px;font-size:13px">检查中…</div>
+<div id="svc-actions"></div>
+</div>
+<script>
+var svcStatusMap={'running':'✅ 运行中','stopped':'⏹ 已停止','starting':'⏳ 启动中','stopping':'⏳ 停止中','not_installed':'未安装','unknown':'未知','not_available':'不可用'};
+function loadSvcStatus(){
+  fetch('/api/service/status').then(r=>r.json()).then(data=>{
+    var s=data.status;
+    document.getElementById('svc-status').textContent='状态：'+(svcStatusMap[s]||s);
+    var a=document.getElementById('svc-actions');
+    if(s==='not_installed'){
+      a.innerHTML='<button type="button" onclick="svcDo(\'install\')" style="background:#34c759">安装为系统服务</button>'
+        +'<p class="hint" style="margin-top:8px">若按钮无效请以管理员身份运行，或使用托盘图标操作。</p>';
+    } else {
+      a.innerHTML='<button type="button" onclick="svcDo(\'uninstall\')" style="background:#ff3b30;margin-top:0">卸载系统服务</button>';
+    }
+  }).catch(function(){document.getElementById('svc-status').textContent='状态：获取失败';});
+}
+function svcDo(action){
+  fetch('/api/service/'+action,{method:'POST'}).then(r=>{
+    if(r.ok){setTimeout(loadSvcStatus,1500);}
+    else{r.text().then(function(t){alert('操作失败: '+t);});}
+  }).catch(function(e){alert('请求失败，请以管理员身份运行: '+e);});
+}
+loadSvcStatus();setInterval(loadSvcStatus,10000);
+</script>
+{{end}}
 </body></html>`))
 
 // customShortcutData 用于模板渲染（Go template 只能访问导出字段）
@@ -139,6 +171,7 @@ type configPageData struct {
 	Msg             string
 	MsgClass        string
 	CustomShortcuts [10]customShortcutData
+	ShowServiceCard bool
 }
 
 // startWebConfig 在随机 localhost 端口启动 HTTP 配置服务，非阻塞。
@@ -155,6 +188,7 @@ func startWebConfig() {
 	mux.HandleFunc("/", handleConfigPage)
 	mux.HandleFunc("/save", handleConfigSave)
 	mux.HandleFunc("/api/devices", handleDevicesAPI)
+	registerServiceRoutes(mux)
 	go http.Serve(l, mux) //nolint:errcheck
 }
 
@@ -276,5 +310,6 @@ func renderPage(w http.ResponseWriter, cfg serverConfig, msg, class string) {
 		Msg:             msg,
 		MsgClass:        class,
 		CustomShortcuts: customs,
+		ShowServiceCard: runtime.GOOS == "windows",
 	})
 }
