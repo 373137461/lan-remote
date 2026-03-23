@@ -121,6 +121,7 @@ func updateCfg(c serverConfig) {
 
 // restartUDPServer 关闭当前 UDP 监听，稍等后以新配置重新启动（用于端口热切换）。
 func restartUDPServer() {
+	opLog("UDP 热重启（端口切换）")
 	currentUDPConnMu.Lock()
 	conn := currentUDPConn
 	currentUDPConnMu.Unlock()
@@ -129,6 +130,16 @@ func restartUDPServer() {
 	}
 	time.Sleep(150 * time.Millisecond)
 	go runUDPServer()
+}
+
+// truncLog 截断日志中的长文本，避免日志文件膨胀（超过 50 个字符显示省略号）。
+func truncLog(s string) string {
+	const max = 50
+	r := []rune(s)
+	if len(r) > max {
+		return string(r[:max]) + "…"
+	}
+	return s
 }
 
 // sanitizeFilename 去除文件名中不允许的字符，保留字母、数字、连字符、下划线和点。
@@ -390,6 +401,7 @@ func startClipboardMonitor(conn *net.UDPConn) {
 		active := currentUDPConn == conn
 		currentUDPConnMu.Unlock()
 		if !active {
+			opLog("[剪贴板] 监视器退出（UDP 已热重启）")
 			return
 		}
 
@@ -404,13 +416,21 @@ func startClipboardMonitor(conn *net.UDPConn) {
 			return robotgo.ReadAll()
 		}()
 
-		if err != nil || text == "" || text == lastClip {
+		if err != nil {
+			opLog("[剪贴板] ReadAll 异常: %v", err)
+			continue
+		}
+		if text == "" || text == lastClip {
 			continue
 		}
 
 		// 超长文本跳过，不推送（保护 UDP 包大小和客户端性能）
-		if len([]rune(text)) > maxClipRunes {
-			lastClip = text // 记录已见，避免每轮都检查
+		runeLen := len([]rune(text))
+		if runeLen > maxClipRunes {
+			if lastClip != text {
+				opLog("[剪贴板] 跳过超长文本（%d 字符，限制 %d）", runeLen, maxClipRunes)
+				lastClip = text
+			}
 			continue
 		}
 
@@ -424,14 +444,19 @@ func startClipboardMonitor(conn *net.UDPConn) {
 		pkt[2] = byte(len(b64Bytes))
 		copy(pkt[3:], b64Bytes)
 
+		sent := 0
 		cutoff := time.Now().Add(-activeWindow)
 		clientMu.RLock()
 		for _, c := range clients {
 			if c.addr != nil && c.lastSeen.After(cutoff) {
 				conn.WriteToUDP(pkt, c.addr) //nolint:errcheck
+				sent++
 			}
 		}
 		clientMu.RUnlock()
+		if sent > 0 {
+			opLog("[剪贴板] 推送至 %d 个客户端（%d 字符）: %s", sent, runeLen, truncLog(text))
+		}
 	}
 }
 
@@ -615,14 +640,15 @@ func runUDPServer() {
 	addr := fmt.Sprintf(":%d", cfg.port)
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
-		log.Printf("解析地址失败: %v", err)
+		opLog("UDP 地址解析失败: %v", err)
 		return
 	}
 	conn, err := net.ListenUDP("udp", udpAddr)
 	if err != nil {
-		log.Printf("监听 UDP 失败: %v", err)
+		opLog("UDP 监听失败 %s: %v", addr, err)
 		return
 	}
+	opLog("UDP 开始监听: %s", addr)
 
 	currentUDPConnMu.Lock()
 	currentUDPConn = conn
@@ -635,6 +661,7 @@ func runUDPServer() {
 			currentUDPConn = nil
 		}
 		currentUDPConnMu.Unlock()
+		opLog("UDP 监听已停止: %s", addr)
 	}()
 
 	// 定期打印连接用户表
@@ -839,9 +866,9 @@ func handlePacket(conn *net.UDPConn, addr *net.UDPAddr, data []byte) {
 					if workerMode {
 						// 登录界面不支持粘贴，直接逐字输入
 						winTypeStr(text)
-						opLog("文本输入(worker逐字): %q", text)
+						opLog("[%s] 文本输入(worker逐字): %s", ip, truncLog(text))
 					} else {
-						pasteText(text)
+						pasteText(ip, text)
 					}
 				}
 			}
@@ -858,7 +885,7 @@ func handlePacket(conn *net.UDPConn, addr *net.UDPAddr, data []byte) {
 					} else {
 						robotgo.TypeStr(text)
 					}
-					opLog("文本输入(逐字): %q", text)
+					opLog("[%s] 文本输入(逐字): %s", ip, truncLog(text))
 				}
 			}
 		}
@@ -884,14 +911,14 @@ func handlePacket(conn *net.UDPConn, addr *net.UDPAddr, data []byte) {
 
 // pasteText 写入剪贴板并触发粘贴，写入失败时降级为逐字输入
 // 使用显式 KeyDown + KeyTap + KeyUp 序列，比 KeyTap("v","command") 更可靠
-func pasteText(text string) {
+func pasteText(ip, text string) {
 	if workerMode {
 		winTypeStr(text)
-		opLog("文本输入(worker逐字): %q", text)
+		opLog("[%s] 文本输入(worker逐字): %s", ip, truncLog(text))
 		return
 	}
 	if err := robotgo.WriteAll(text); err != nil {
-		log.Printf("剪贴板写入失败（%v），改用逐字输入", err)
+		opLog("[%s] 剪贴板写入失败（%v），降级为逐字输入", ip, err)
 		robotgo.TypeStr(text)
 		return
 	}
@@ -910,7 +937,7 @@ func pasteText(text string) {
 		time.Sleep(30 * time.Millisecond)
 		robotgo.KeyUp("ctrl")
 	}
-	opLog("文本输入(剪贴板): %q", text)
+	opLog("[%s] 文本输入(剪贴板): %s", ip, truncLog(text))
 }
 
 // modKey 返回当前平台的修饰键名
